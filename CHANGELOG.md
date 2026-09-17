@@ -21,6 +21,26 @@ media formats and CSS. The classic renderer remains the default and is unchanged
     `QSPTextBox`, selected through the `QSPMainTextBox` typedef in `frame.h`.
 - `CHANGELOG.md`.
 
+### Fixed
+
+- **Flicker on every action in real games.** Games rebuild their whole description
+  on each refresh through the usual `GS`/`GOSUB` chain, so the incoming HTML almost
+  always differs somewhere — a clock, a counter, a stat bar — even when the visible
+  media is identical. The renderer was assigning `innerHTML`, which destroys and
+  recreates every node; a recreated `<img>` is re-fetched, re-decoded and re-laid-out,
+  and the browser paints the gap before it finishes. Panes carrying icons or images
+  therefore flashed on every single action.
+
+  The classic renderer does not show this because `SetPage` runs inside
+  `Freeze()`/`Thaw()` and wxHtmlWindow decodes images synchronously, so its repaint is
+  atomic. A browser engine updates asynchronously, which makes the teardown visible.
+
+  The shell now reconciles the existing DOM against the new markup and touches only
+  what actually differs, so an element whose attributes are unchanged — an `<img>`
+  with the same `src` above all — is never recreated. Note this is a DOM teardown, not
+  a page reload: navigation is vetoed after the shell loads, and the document is only
+  ever re-navigated when the game folder changes.
+
 ### Implementation notes
 
 These are the details that make the port behave; they are easy to get wrong.

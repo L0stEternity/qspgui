@@ -208,10 +208,42 @@ void QSPWebTextBox::WriteShellFile()
         wxT("window.qspSetBase=function(href){base.href=href;};\n")
         wxT("window.qspSetStyle=function(name,value){")
         wxT("document.documentElement.style.setProperty(name,value);};\n")
-        /* The whole point of the port: replace the subtree in place, never
-           navigate, so the compositor has nothing to flash. */
+        /* Games rebuild their whole description on every refresh (the usual
+           GOSUB chain), so the incoming HTML nearly always differs in some
+           small way - a clock, a counter - while the bulk of it, images
+           included, is unchanged. Assigning innerHTML would destroy and
+           recreate every node, and a recreated <img> is re-fetched, re-decoded
+           and re-laid-out; the browser paints the gap before it finishes. That
+           is the flicker. So reconcile the existing tree against the new one
+           and touch only what actually differs. */
+        wxT("function qspSameNode(a,b){return a.nodeType===b.nodeType&&a.nodeName===b.nodeName;}\n")
+        wxT("function qspMorphAttrs(t,s){\n")
+        wxT("  var i,a,sa=s.attributes,ta=t.attributes;\n")
+        /* Setting src to its current value still restarts a load, so compare first. */
+        wxT("  for(i=sa.length-1;i>=0;i--){a=sa[i];\n")
+        wxT("    if(t.getAttribute(a.name)!==a.value)t.setAttribute(a.name,a.value);}\n")
+        wxT("  for(i=ta.length-1;i>=0;i--){a=ta[i];\n")
+        wxT("    if(!s.hasAttribute(a.name))t.removeAttribute(a.name);}\n")
+        wxT("}\n")
+        wxT("function qspMorph(target,source){\n")
+        wxT("  var tc=target.firstChild,sc=source.firstChild,tn,sn;\n")
+        wxT("  while(sc){\n")
+        wxT("    sn=sc.nextSibling;\n")
+        wxT("    if(!tc){target.appendChild(sc);sc=sn;continue;}\n")
+        wxT("    tn=tc.nextSibling;\n")
+        wxT("    if(qspSameNode(tc,sc)){\n")
+        wxT("      if(tc.nodeType===3||tc.nodeType===8){\n")
+        wxT("        if(tc.nodeValue!==sc.nodeValue)tc.nodeValue=sc.nodeValue;\n")
+        wxT("      }else{qspMorphAttrs(tc,sc);qspMorph(tc,sc);}\n")
+        wxT("    }else{target.replaceChild(sc,tc);}\n")
+        wxT("    tc=tn;sc=sn;\n")
+        wxT("  }\n")
+        wxT("  while(tc){tn=tc.nextSibling;target.removeChild(tc);tc=tn;}\n")
+        wxT("}\n")
+        wxT("var qspStage=document.createElement('div');\n")
         wxT("window.qspSetContent=function(html,toBottom){\n")
-        wxT("  content.innerHTML=html;\n")
+        wxT("  qspStage.innerHTML=html;\n")
+        wxT("  qspMorph(content,qspStage);\n")
         wxT("  document.body.scrollTop=toBottom?document.body.scrollHeight:0;\n")
         wxT("  document.documentElement.scrollTop=toBottom?document.documentElement.scrollHeight:0;\n")
         wxT("};\n")
