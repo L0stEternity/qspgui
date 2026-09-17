@@ -192,6 +192,7 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_toQuit = false;
     m_keyPressedWhileDisabled = false;
     m_isGameOpened = false;
+    m_isManagerUpdatePending = false;
 }
 
 QSPFrame::~QSPFrame()
@@ -359,9 +360,30 @@ void QSPFrame::ShowPane(wxWindowID id, bool toShow)
         else if (pane->IsShown() != toShow)
         {
             pane->Show(toShow);
-            m_manager->Update();
+            RequestManagerUpdate();
         }
     }
+}
+
+/* Every wxAuiManager::Update() tears down and rebuilds the whole dock layout,
+   and a single action can toggle several panes. Freeze() hides the half-built
+   result for ordinary controls, but a wxWebView is a child window of another
+   process and keeps painting through it, so each rebuild shows as a blink with
+   duplicated captions. Collapse a burst of toggles into one relayout. */
+void QSPFrame::RequestManagerUpdate()
+{
+    if (m_isManagerUpdatePending) return;
+    m_isManagerUpdatePending = true;
+    CallAfter(&QSPFrame::DoManagerUpdate);
+}
+
+void QSPFrame::DoManagerUpdate()
+{
+    if (!m_isManagerUpdatePending) return;
+    m_isManagerUpdatePending = false;
+    wxON_BLOCK_EXIT_THIS0(QSPFrame::Thaw);
+    Freeze();
+    m_manager->Update();
 }
 
 void QSPFrame::ApplyParams()

@@ -118,6 +118,10 @@
         void LoadSettings();
         void EnableControls(bool status, bool isExtended = false);
         void ShowPane(wxWindowID id, bool toShow);
+        /* Relayouts are coalesced: a single action can toggle several panes,
+           and every wxAuiManager::Update() rebuilds the whole dock layout. */
+        void RequestManagerUpdate();
+        void DoManagerUpdate();
         void ApplyParams();
         void DeleteMenu();
         void AddMenuItem(const wxString &name, const wxString &imgPath);
@@ -223,6 +227,7 @@
         wxMenu *m_fileMenu;
         wxMenu *m_settingsMenu;
         wxAuiManager *m_manager;
+        bool m_isManagerUpdatePending;
         wxColour m_backColor;
         wxColour m_linkColor;
         wxColour m_fontColor;
