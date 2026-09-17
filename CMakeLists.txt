@@ -55,8 +55,16 @@ FetchContent_Declare(qsp-custom
 )
 FetchContent_MakeAvailable(qsp-custom)
 
+# Optional modern renderer built on wxWebView (WebView2 / WebKitGTK / WKWebView).
+# The classic wxHtmlWindow renderer is always built; this only adds an alternative.
+option(QSPGUI_USE_WEBVIEW "Build the wxWebView-based renderer in addition to the classic one" OFF)
+
 if (USE_INSTALLED_WX)
-	find_package(wxWidgets REQUIRED base core adv aui html net)
+	if (QSPGUI_USE_WEBVIEW)
+		find_package(wxWidgets REQUIRED base core adv aui html net webview)
+	else()
+		find_package(wxWidgets REQUIRED base core adv aui html net)
+	endif()
 	include(${wxWidgets_USE_FILE})
 else()
 	FetchContent_Declare(wxWidgets-custom
@@ -84,7 +92,19 @@ else()
 	set(wxUSE_XRC OFF)
 	set(wxUSE_DEBUGREPORT OFF)
 	set(wxUSE_STC OFF)
-	set(wxUSE_WEBVIEW OFF)
+	if (QSPGUI_USE_WEBVIEW)
+		set(wxUSE_WEBVIEW ON)
+		if (WIN32)
+			# Edge/Chromium backend only; the legacy IE backend needs ActiveX, which we keep off
+			set(wxUSE_WEBVIEW_EDGE ON)
+			# Static loader: keeps the player a single self-contained exe,
+			# matching how the rest of it is linked
+			set(wxUSE_WEBVIEW_EDGE_STATIC ON)
+			set(wxUSE_WEBVIEW_IE OFF)
+		endif()
+	else()
+		set(wxUSE_WEBVIEW OFF)
+	endif()
 
 	set(wxBUILD_MONOLITHIC OFF)
 	set(wxBUILD_SAMPLES OFF)
@@ -123,6 +143,9 @@ set(QSPGUI_SOURCES
 	qspgui/updateappdialog.cpp
 	qspgui/sound/sound_engine.c
 )
+if (QSPGUI_USE_WEBVIEW)
+	list(APPEND QSPGUI_SOURCES qspgui/webtextbox.cpp)
+endif()
 if (WIN32)
 	list(APPEND QSPGUI_SOURCES qspgui/rsc/res.rc)
 	configure_file("${CMAKE_CURRENT_SOURCE_DIR}/misc/common/icons/logo.ico" "${CMAKE_BINARY_DIR}/misc/icons/logo.ico" COPYONLY)
@@ -154,6 +177,31 @@ endif()
 
 target_compile_definitions(qspgui PRIVATE _UNICODE)
 target_link_libraries(qspgui PRIVATE qsp wxbase wxcore wxadv wxaui wxnet wxhtml)
+if (QSPGUI_USE_WEBVIEW)
+	target_compile_definitions(qspgui PRIVATE QSPGUI_USE_WEBVIEW)
+	if (NOT USE_INSTALLED_WX)
+		target_link_libraries(qspgui PRIVATE wxwebview)
+	endif()
+	if (WIN32)
+		# The Edge backend can serve the game folder over a virtual host, which
+		# keeps relative media paths contained and gives <video> a real origin.
+		# It needs the WebView2 SDK headers wxWidgets downloads for itself;
+		# without them we fall back to a plain file:// base URL.
+		# wxWidgets downloads the SDK itself and caches the location here, but
+		# only adds the include path to its own target privately.
+		find_path(QSPGUI_WEBVIEW2_INCLUDE_DIR
+			NAMES WebView2.h
+			HINTS "${WEBVIEW2_PACKAGE_DIR}/build/native/include"
+			NO_DEFAULT_PATH)
+		if (QSPGUI_WEBVIEW2_INCLUDE_DIR)
+			message(STATUS "WebView2 SDK headers: ${QSPGUI_WEBVIEW2_INCLUDE_DIR}")
+			target_include_directories(qspgui PRIVATE "${QSPGUI_WEBVIEW2_INCLUDE_DIR}")
+			target_compile_definitions(qspgui PRIVATE QSPGUI_HAVE_WEBVIEW2_SDK)
+		else()
+			message(WARNING "WebView2 SDK headers not found; falling back to file:// base URLs")
+		endif()
+	endif()
+endif()
 
 # Installation
 
@@ -202,8 +250,12 @@ install(IMPORTED_RUNTIME_ARTIFACTS qspgui
 		BUNDLE DESTINATION .)
 
 if (NOT USE_INSTALLED_WX)
-	set_target_properties(wxbase wxcore wxadv wxaui wxhtml wxnet PROPERTIES INSTALL_RPATH "${INSTALL_RPATH}")
-	install(TARGETS wxbase wxcore wxadv wxaui wxhtml wxnet
+	set(WX_INSTALL_TARGETS wxbase wxcore wxadv wxaui wxhtml wxnet)
+	if (QSPGUI_USE_WEBVIEW)
+		list(APPEND WX_INSTALL_TARGETS wxwebview)
+	endif()
+	set_target_properties(${WX_INSTALL_TARGETS} PROPERTIES INSTALL_RPATH "${INSTALL_RPATH}")
+	install(TARGETS ${WX_INSTALL_TARGETS}
 			COMPONENT Libs
 			RUNTIME DESTINATION ${BINDIR}
 			LIBRARY DESTINATION ${RLIBDIR}

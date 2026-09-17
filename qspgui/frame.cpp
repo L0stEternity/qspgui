@@ -169,13 +169,13 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_manager->SetDockSizeConstraint(0.5, 0.5);
     m_imgView = new QSPImgCanvas(this, ID_VIEWPIC);
     m_manager->AddPane(m_imgView, wxAuiPaneInfo().Name(wxT("imgview")).MinSize(50, 50).BestSize(150, 150).Top().MaximizeButton().Hide());
-    m_desc = new QSPTextBox(this, ID_MAINDESC);
+    m_desc = new QSPMainTextBox(this, ID_MAINDESC);
     m_manager->AddPane(m_desc, wxAuiPaneInfo().Name(wxT("desc")).CenterPane());
     m_objects = new QSPListBox(this, ID_OBJECTS);
     m_manager->AddPane(m_objects, wxAuiPaneInfo().Name(wxT("objs")).MinSize(50, 50).BestSize(100, 100).Right().MaximizeButton());
     m_actions = new QSPListBox(this, ID_ACTIONS, LB_EXTENDED);
     m_manager->AddPane(m_actions, wxAuiPaneInfo().Name(wxT("acts")).MinSize(50, 50).BestSize(100, 100).Bottom().MaximizeButton());
-    m_vars = new QSPTextBox(this, ID_VARSDESC);
+    m_vars = new QSPMainTextBox(this, ID_VARSDESC);
     m_manager->AddPane(m_vars, wxAuiPaneInfo().Name(wxT("vars")).MinSize(50, 50).BestSize(100, 100).Bottom().MaximizeButton());
     m_input = new QSPInputBox(this, ID_INPUT);
     m_manager->AddPane(m_input, wxAuiPaneInfo().Name(wxT("input")).MinSize(50, 20).BestSize(100, 20).Bottom().Layer(1));

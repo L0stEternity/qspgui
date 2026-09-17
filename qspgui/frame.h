@@ -40,6 +40,16 @@
 
     #include "qspgui_config.h"
 
+    /* The main and additional description panes can be rendered either by the
+       classic wxHtmlWindow or by a real browser engine. Everything else in the
+       player is identical, so the choice is a single type. */
+    #ifdef QSPGUI_USE_WEBVIEW
+        #include "webtextbox.h"
+        typedef QSPWebTextBox QSPMainTextBox;
+    #else
+        typedef QSPTextBox QSPMainTextBox;
+    #endif
+
     #define QSP_VER wxT(QSPGUI_VER_STR)
     #define QSP_LOGO wxT("Quest Soft Player ") QSP_VER
 
@@ -119,8 +129,8 @@
 
         // Accessors
         wxTimer *GetTimer() const { return m_timer; }
-        QSPTextBox *GetDesc() const { return m_desc; }
-        QSPTextBox *GetVars() const { return m_vars; }
+        QSPMainTextBox *GetDesc() const { return m_desc; }
+        QSPMainTextBox *GetVars() const { return m_vars; }
         QSPInputBox *GetInput() const { return m_input; }
         QSPListBox *GetActions() const { return m_actions; }
         QSPListBox *GetObjects() const { return m_objects; }
@@ -201,8 +211,8 @@
         wxString m_configDefPath;
         QSPTranslationHelper *m_transHelper;
         wxTimer *m_timer;
-        QSPTextBox *m_desc;
-        QSPTextBox *m_vars;
+        QSPMainTextBox *m_desc;
+        QSPMainTextBox *m_vars;
         QSPInputBox *m_input;
         QSPListBox *m_objects;
         QSPListBox *m_actions;
