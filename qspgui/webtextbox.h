@@ -25,9 +25,13 @@
     /* Drop-in replacement for QSPTextBox backed by a real browser engine
        (WebView2 on Windows, WebKitGTK on Linux, WKWebView on macOS).
 
-       Unlike the classic renderer this never re-navigates once the shell
-       document is up: text changes are pushed into the live DOM, which is
-       what keeps location changes from flashing. */
+       The document is loaded once and never navigated again, because a
+       navigation blanks the view before the new page paints and that blank
+       frame is the flash. Instead the document holds two stacked layers: an
+       update fills the hidden one, waits until it is laid out and its images
+       have decoded, and only then swaps which layer is visible. The old
+       content stays on screen until the new one is complete, so the pane goes
+       straight from one finished state to the next. */
     class QSPWebTextBox : public wxPanel
     {
         DECLARE_CLASS(QSPWebTextBox)
@@ -45,6 +49,12 @@
         // Accessors
         void SetIsHtml(bool isHtml);
         void SetText(const wxString& text, bool toScroll = false);
+        /* A single refresh touches the pane repeatedly - text, colours, font,
+           background - and may clear it before filling it again. Nothing is
+           sent between Begin and End, so the view is handed one finished state
+           per refresh instead of a sequence of half-built ones. */
+        void BeginUpdate();
+        void EndUpdate();
         void SetTextFont(const wxFont& font);
         wxFont GetTextFont() const { return m_font; }
         wxString GetText() const { return m_text; }
@@ -57,8 +67,10 @@
 
     protected:
         // Internal methods
-        void PushContent();
-        void PushStyle();
+        void MarkDirty();
+        void Flush();
+        wxString BuildUpdateScript() const;
+        wxString BuildStyleObject() const;
         void RunScript(const wxString& script);
         void SetupGameFolderAccess();
         bool SetupShellHost();
@@ -77,9 +89,12 @@
         // Fields
         wxWebView *m_view;
         wxString m_shellUrl;
+        wxString m_shellVersion;
         bool m_isShellRequested;
-        PathProvider *m_pathProvider;
         bool m_isShellReady;
+        bool m_isUpdatePending;
+        int m_updateDepth;
+        PathProvider *m_pathProvider;
         bool m_toUseHtml;
         bool m_toScroll;
         wxString m_text;

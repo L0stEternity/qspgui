@@ -328,8 +328,6 @@ void QSPFrame::ShowPane(wxWindowID id, bool toShow)
 {
     int i;
     wxAuiPaneInfoArray& allPanes = m_manager->GetAllPanes();
-    wxON_BLOCK_EXIT_THIS0(QSPFrame::Thaw);
-    Freeze();
     wxAuiPaneInfo *maximizedPane = NULL;
     wxAuiPaneInfo *pane = NULL;
     for (i = (int)allPanes.GetCount() - 1; i >= 0; --i)
@@ -349,6 +347,16 @@ void QSPFrame::ShowPane(wxWindowID id, bool toShow)
             {
                 if (!toShow)
                 {
+                    /* Freezing belongs around an actual relayout and nowhere
+                       else. Freeze() recurses into every child and Thaw()
+                       follows with a refresh, which ordinary controls satisfy
+                       synchronously - but a browser control re-composites on
+                       its own schedule, so each needless cycle shows as a
+                       blank frame. Games call this on every SHOWSTAT/SHOWOBJS,
+                       almost always with the pane already in the state asked
+                       for, so freezing up front cost a flash per game tick. */
+                    wxON_BLOCK_EXIT_THIS0(QSPFrame::Thaw);
+                    Freeze();
                     m_manager->RestorePane(*pane);
                     pane->Hide();
                     m_manager->Update();

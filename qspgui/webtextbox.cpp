@@ -78,6 +78,22 @@ namespace
         return wxT("#") + QSPTools::GetHexColor(color);
     }
 
+    /* The shell is fetched through the browser's cache, so a build that
+       changes it would otherwise keep being served the previous version -
+       leaving the pane with a document that has no qspUpdate in it. Tagging
+       the URL with a hash of the contents busts that, and only when the shell
+       actually changed. */
+    wxString HashOf(const wxString& str)
+    {
+        wxUint32 hash = 2166136261u;
+        for (wxString::const_iterator i = str.begin(); i != str.end(); ++i)
+        {
+            hash ^= (wxUint32)(*i).GetValue();
+            hash *= 16777619u;
+        }
+        return wxString::Format(wxT("%08x"), hash);
+    }
+
     /* Turn a local directory into a URL usable as a document base. */
     wxString ToFileUrl(const wxString& dirPath)
     {
@@ -92,7 +108,10 @@ QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
     wxPanel(parent, id, wxDefaultPosition, wxDefaultSize, wxNO_BORDER)
 {
     m_pathProvider = NULL;
+    m_isShellRequested = false;
     m_isShellReady = false;
+    m_isUpdatePending = false;
+    m_updateDepth = 0;
     m_toUseHtml = false;
     m_toScroll = false;
     m_font = *wxNORMAL_FONT;
@@ -100,7 +119,6 @@ QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
     m_backColor = wxPanel::GetBackgroundColour();
     m_fontColor = wxPanel::GetForegroundColour();
 
-    m_isShellRequested = false;
     WriteShellFile();
 
     m_view = wxWebView::New();
@@ -145,7 +163,8 @@ bool QSPWebTextBox::SetupShellHost()
         webView2_3->Release();
         if (SUCCEEDED(hr))
         {
-            m_shellUrl = wxT("https://") QSP_SHELL_HOST wxT("/") QSP_SHELL_FILE;
+            m_shellUrl = wxT("https://") QSP_SHELL_HOST wxT("/") QSP_SHELL_FILE
+                         wxT("?v=") + m_shellVersion;
             return true;
         }
     }
@@ -188,69 +207,80 @@ void QSPWebTextBox::WriteShellFile()
         wxT(":root{--qsp-bg:#e0e0e0;--qsp-fg:#000000;--qsp-link:#0000ff;")
         wxT("--qsp-font:sans-serif;--qsp-size:12pt;--qsp-bgimg:none;}\n")
         wxT("html,body{margin:0;padding:0;height:100%;}\n")
-        wxT("body{background-color:var(--qsp-bg);color:var(--qsp-fg);")
+        wxT("body{position:relative;background-color:var(--qsp-bg);color:var(--qsp-fg);")
         wxT("font-family:var(--qsp-font);font-size:var(--qsp-size);")
         wxT("background-image:var(--qsp-bgimg);background-repeat:no-repeat;")
         wxT("background-position:center center;background-size:contain;")
-        wxT("background-attachment:fixed;overflow-y:auto;overflow-x:hidden;}\n")
+        wxT("background-attachment:fixed;overflow:hidden;}\n")
         wxT("a{color:var(--qsp-link);}\n")
-        wxT("#qsp-content{padding:5px;}\n")
+        /* The two layers sit exactly on top of each other and differ only in
+           which one is visible. A hidden layer is still laid out - that is the
+           point, its images load and its height is known - so the swap is a
+           pure visibility change with nothing left to compute or fetch. */
+        wxT(".qsp-layer{position:absolute;left:0;top:0;right:0;bottom:0;")
+        wxT("overflow-y:auto;overflow-x:hidden;padding:5px;box-sizing:border-box;}\n")
+        wxT(".qsp-hidden{visibility:hidden;}\n")
         wxT("img,video{max-width:100%;height:auto;}\n")
         wxT("</style></head>\n")
-        wxT("<body><div id=\"qsp-content\"></div>\n")
+        wxT("<body>\n")
+        wxT("<div id=\"qsp-l0\" class=\"qsp-layer\"></div>\n")
+        wxT("<div id=\"qsp-l1\" class=\"qsp-layer qsp-hidden\"></div>\n")
         wxT("<script>\n")
         wxT("(function(){\n")
-        wxT("var content=document.getElementById('qsp-content');\n")
+        wxT("var layers=[document.getElementById('qsp-l0'),document.getElementById('qsp-l1')];\n")
         wxT("var base=document.getElementById('qsp-base');\n")
+        wxT("var active=0,token=0;\n")
         /* The host channel can be a moment late on startup; an exception here
            would take the rest of the shell script down with it. */
         wxT("function qspPost(m){try{window.qspHost.postMessage(m);}catch(err){}}\n")
         wxT("window.qspSetBase=function(href){base.href=href;};\n")
-        wxT("window.qspSetStyle=function(name,value){")
-        wxT("document.documentElement.style.setProperty(name,value);};\n")
-        /* Games rebuild their whole description on every refresh (the usual
-           GOSUB chain), so the incoming HTML nearly always differs in some
-           small way - a clock, a counter - while the bulk of it, images
-           included, is unchanged. Assigning innerHTML would destroy and
-           recreate every node, and a recreated <img> is re-fetched, re-decoded
-           and re-laid-out; the browser paints the gap before it finishes. That
-           is the flicker. So reconcile the existing tree against the new one
-           and touch only what actually differs. */
-        wxT("function qspSameNode(a,b){return a.nodeType===b.nodeType&&a.nodeName===b.nodeName;}\n")
-        wxT("function qspMorphAttrs(t,s){\n")
-        wxT("  var i,a,sa=s.attributes,ta=t.attributes;\n")
-        /* Setting src to its current value still restarts a load, so compare first. */
-        wxT("  for(i=sa.length-1;i>=0;i--){a=sa[i];\n")
-        wxT("    if(t.getAttribute(a.name)!==a.value)t.setAttribute(a.name,a.value);}\n")
-        wxT("  for(i=ta.length-1;i>=0;i--){a=ta[i];\n")
-        wxT("    if(!s.hasAttribute(a.name))t.removeAttribute(a.name);}\n")
+        wxT("function applyStyle(s){\n")
+        wxT("  if(!s)return;\n")
+        wxT("  var r=document.documentElement.style;\n")
+        wxT("  r.setProperty('--qsp-bg',s.bg);r.setProperty('--qsp-fg',s.fg);\n")
+        wxT("  r.setProperty('--qsp-link',s.link);r.setProperty('--qsp-font',s.font);\n")
+        wxT("  r.setProperty('--qsp-size',s.size);r.setProperty('--qsp-bgimg',s.bgimg);\n")
         wxT("}\n")
-        wxT("function qspMorph(target,source){\n")
-        wxT("  var tc=target.firstChild,sc=source.firstChild,tn,sn;\n")
-        wxT("  while(sc){\n")
-        wxT("    sn=sc.nextSibling;\n")
-        wxT("    if(!tc){target.appendChild(sc);sc=sn;continue;}\n")
-        wxT("    tn=tc.nextSibling;\n")
-        wxT("    if(qspSameNode(tc,sc)){\n")
-        wxT("      if(tc.nodeType===3||tc.nodeType===8){\n")
-        wxT("        if(tc.nodeValue!==sc.nodeValue)tc.nodeValue=sc.nodeValue;\n")
-        wxT("      }else{qspMorphAttrs(tc,sc);qspMorph(tc,sc);}\n")
-        wxT("    }else{target.replaceChild(sc,tc);}\n")
-        wxT("    tc=tn;sc=sn;\n")
+        /* Nothing reaches the screen until it is finished. The new markup goes
+           into the hidden layer, we wait for its media to become usable, and
+           only then do the layers trade places - so the pane never shows a
+           blank frame or a half-decoded image, it goes straight from one
+           finished state to the next. */
+        wxT("window.qspUpdate=function(html,toBottom,style){\n")
+        wxT("  var mine=++token;\n")
+        wxT("  var back=layers[1-active];\n")
+        wxT("  back.innerHTML=html;\n")
+        wxT("  var media=back.querySelectorAll('img,video'),waits=[],i,m;\n")
+        wxT("  for(i=0;i<media.length;i++){\n")
+        wxT("    m=media[i];\n")
+        wxT("    if(m.tagName==='IMG'){if(m.complete)continue;}\n")
+        wxT("    else if(m.readyState>=1)continue;\n")
+        wxT("    waits.push(new Promise(function(res){\n")
+        wxT("      var ev=this.tagName==='IMG'?'load':'loadedmetadata';\n")
+        wxT("      this.addEventListener(ev,res,{once:true});\n")
+        wxT("      this.addEventListener('error',res,{once:true});\n")
+        wxT("    }.bind(m)));\n")
         wxT("  }\n")
-        wxT("  while(tc){tn=tc.nextSibling;target.removeChild(tc);tc=tn;}\n")
-        wxT("}\n")
-        wxT("var qspStage=document.createElement('div');\n")
-        wxT("window.qspSetContent=function(html,toBottom){\n")
-        wxT("  qspStage.innerHTML=html;\n")
-        wxT("  qspMorph(content,qspStage);\n")
-        wxT("  document.body.scrollTop=toBottom?document.body.scrollHeight:0;\n")
-        wxT("  document.documentElement.scrollTop=toBottom?document.documentElement.scrollHeight:0;\n")
+        wxT("  var swap=function(){\n")
+        /* A newer update has already staged over this one; its swap wins. */
+        wxT("    if(mine!==token)return;\n")
+        wxT("    applyStyle(style);\n")
+        wxT("    back.scrollTop=toBottom?back.scrollHeight:0;\n")
+        wxT("    back.classList.remove('qsp-hidden');\n")
+        wxT("    layers[active].classList.add('qsp-hidden');\n")
+        wxT("    layers[active].innerHTML='';\n")
+        wxT("    active=1-active;\n")
+        wxT("  };\n")
+        wxT("  if(!waits.length){requestAnimationFrame(swap);return;}\n")
+        /* A missing or slow asset must not strand the pane on old content. */
+        wxT("  var late=setTimeout(swap,400);\n")
+        wxT("  Promise.all(waits).then(function(){clearTimeout(late);requestAnimationFrame(swap);});\n")
         wxT("};\n")
         wxT("window.qspScrollTo=function(anchor){\n")
+        wxT("  var l=layers[active];\n")
         wxT("  var el=anchor?document.getElementById(anchor):null;\n")
         wxT("  if(!el&&anchor){var n=document.getElementsByName(anchor);el=n.length?n[0]:null;}\n")
-        wxT("  if(el)el.scrollIntoView(true);else document.documentElement.scrollTop=0;\n")
+        wxT("  if(el)el.scrollIntoView(true);else l.scrollTop=0;\n")
         wxT("};\n")
         /* Links are reported with their *raw* attribute so the host keeps the
            classic player's semantics for "#anchor" and "EXEC:" untouched. */
@@ -275,6 +305,8 @@ void QSPWebTextBox::WriteShellFile()
         wxT("qspPost('R');\n")
         wxT("})();\n")
         wxT("</script></body></html>\n");
+
+    m_shellVersion = HashOf(shell);
 
     wxString path(GetShellPath());
     wxFileName::Mkdir(wxFileName(path).GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
@@ -335,8 +367,9 @@ void QSPWebTextBox::SetupGameFolderAccess()
             m_baseUrl = wxT("https://") QSP_GAME_HOST wxT("/");
             /* A mapping only applies to documents loaded after it is
                registered; an existing document keeps trying to resolve the
-               name over DNS and its requests just hang. Reloading the shell
-               happens once per game load, not per location. */
+               name over DNS and its requests just hang. This is the only
+               navigation after startup, and it happens once per game load -
+               never per location. */
             if (m_isShellRequested)
             {
                 m_isShellReady = false;
@@ -361,40 +394,73 @@ void QSPWebTextBox::RunScript(const wxString& script)
         m_view->RunScriptAsync(script);
 }
 
-void QSPWebTextBox::PushContent()
+wxString QSPWebTextBox::BuildStyleObject() const
 {
-    wxString text(QSPTools::HtmlizeWhitespaces(m_toUseHtml ? m_text : QSPTools::ProceedAsPlain(m_text)));
-    RunScript(wxString::Format(wxT("qspSetContent(%s,%s);"),
-        ToJsString(text).wx_str(),
-        m_toScroll ? wxT("true") : wxT("false")));
-}
-
-void QSPWebTextBox::PushStyle()
-{
-    wxString script;
-    script << wxT("qspSetStyle('--qsp-bg',") << ToJsString(ToCssColor(m_backColor)) << wxT(");");
-    script << wxT("qspSetStyle('--qsp-fg',") << ToJsString(ToCssColor(m_fontColor)) << wxT(");");
-    script << wxT("qspSetStyle('--qsp-link',") << ToJsString(ToCssColor(m_linkColor)) << wxT(");");
-    script << wxT("qspSetStyle('--qsp-font',") << ToJsString(m_font.GetFaceName()) << wxT(");");
-    script << wxT("qspSetStyle('--qsp-size',") << ToJsString(wxString::Format(wxT("%dpt"), m_font.GetPointSize())) << wxT(");");
-
     wxString bgImage(wxT("none"));
     if (!m_backImagePath.IsEmpty())
     {
         /* Resolved against the document base, same as any other game asset. */
         wxString escaped(m_backImagePath);
+        escaped.Replace(wxT("\\"), wxT("\\\\"));
         escaped.Replace(wxT("'"), wxT("\\'"));
         bgImage = wxT("url('") + escaped + wxT("')");
     }
-    script << wxT("qspSetStyle('--qsp-bgimg',") << ToJsString(bgImage) << wxT(");");
 
-    RunScript(script);
+    wxString style;
+    style << wxT("{bg:")    << ToJsString(ToCssColor(m_backColor))
+          << wxT(",fg:")    << ToJsString(ToCssColor(m_fontColor))
+          << wxT(",link:")  << ToJsString(ToCssColor(m_linkColor))
+          << wxT(",font:")  << ToJsString(m_font.GetFaceName())
+          << wxT(",size:")  << ToJsString(wxString::Format(wxT("%dpt"), m_font.GetPointSize()))
+          << wxT(",bgimg:") << ToJsString(bgImage)
+          << wxT("}");
+    return style;
+}
+
+wxString QSPWebTextBox::BuildUpdateScript() const
+{
+    wxString text(QSPTools::HtmlizeWhitespaces(m_toUseHtml ? m_text : QSPTools::ProceedAsPlain(m_text)));
+    return wxString::Format(wxT("qspUpdate(%s,%s,%s);"),
+        ToJsString(text).wx_str(),
+        m_toScroll ? wxT("true") : wxT("false"),
+        BuildStyleObject().wx_str());
+}
+
+/* Text, colours and font arrive one at a time during a refresh; collecting
+   them into a single update keeps the pane from staging the same content
+   several times over. */
+void QSPWebTextBox::MarkDirty()
+{
+    if (m_isUpdatePending) return;
+    m_isUpdatePending = true;
+    CallAfter(&QSPWebTextBox::Flush);
+}
+
+void QSPWebTextBox::Flush()
+{
+    if (!m_isUpdatePending) return;
+    if (m_updateDepth > 0) return;  // EndUpdate will come back here
+    if (!m_isShellReady) return;    // the shell's load handler will come back here
+
+    m_isUpdatePending = false;
+    RunScript(BuildUpdateScript());
+}
+
+void QSPWebTextBox::BeginUpdate()
+{
+    ++m_updateDepth;
+}
+
+void QSPWebTextBox::EndUpdate()
+{
+    if (m_updateDepth <= 0) return;
+    if (--m_updateDepth > 0) return;
+    if (m_isUpdatePending) CallAfter(&QSPWebTextBox::Flush);
 }
 
 void QSPWebTextBox::RefreshUI()
 {
-    PushStyle();
-    PushContent();
+    MarkDirty();
 }
 
 void QSPWebTextBox::SetIsHtml(bool isHtml)
@@ -402,7 +468,7 @@ void QSPWebTextBox::SetIsHtml(bool isHtml)
     if (m_toUseHtml != isHtml)
     {
         m_toUseHtml = isHtml;
-        PushContent();
+        MarkDirty();
     }
 }
 
@@ -420,7 +486,7 @@ void QSPWebTextBox::SetText(const wxString& text, bool toScroll)
         m_text = text;
         m_toScroll = toScroll;
         SetupGameFolderAccess();
-        PushContent();
+        MarkDirty();
     }
 }
 
@@ -430,7 +496,7 @@ void QSPWebTextBox::LoadBackImage(const wxString& imagePath)
     {
         m_backImagePath = imagePath;
         SetupGameFolderAccess();
-        PushStyle();
+        MarkDirty();
     }
 }
 
@@ -449,32 +515,41 @@ void QSPWebTextBox::SetTextFont(const wxFont& font)
     if (!m_font.GetFaceName().IsSameAs(fontName, false) || m_font.GetPointSize() != fontSize)
     {
         m_font = font;
-        PushStyle();
+        MarkDirty();
     }
 }
 
 void QSPWebTextBox::SetLinkColor(const wxColour& clr)
 {
-    m_linkColor = clr;
-    PushStyle();
+    if (m_linkColor != clr)
+    {
+        m_linkColor = clr;
+        MarkDirty();
+    }
 }
 
 bool QSPWebTextBox::SetBackgroundColour(const wxColour& colour)
 {
-    m_backColor = colour;
     /* The panel itself shows through while the browser is still coming up
        and during resizes, so it has to carry the same colour. */
     bool result = wxPanel::SetBackgroundColour(colour);
-    if (m_view) m_view->SetBackgroundColour(colour);
-    PushStyle();
+    if (m_backColor != colour)
+    {
+        m_backColor = colour;
+        if (m_view) m_view->SetBackgroundColour(colour);
+        MarkDirty();
+    }
     return result;
 }
 
 bool QSPWebTextBox::SetForegroundColour(const wxColour& colour)
 {
-    m_fontColor = colour;
     bool result = wxPanel::SetForegroundColour(colour);
-    PushStyle();
+    if (m_fontColor != colour)
+    {
+        m_fontColor = colour;
+        MarkDirty();
+    }
     return result;
 }
 
@@ -503,12 +578,14 @@ void QSPWebTextBox::OnWebViewLoaded(wxWebViewEvent& event)
 
     if (!m_baseUrl.IsEmpty())
         RunScript(wxString::Format(wxT("qspSetBase(%s);"), ToJsString(m_baseUrl).wx_str()));
-    RefreshUI();
+
+    m_isUpdatePending = true;
+    Flush();
 }
 
-/* Only the shell may ever load here. A navigation would destroy the document
-   we keep mutating, which is exactly the flicker this port exists to remove,
-   so links go through the script message channel instead. */
+/* Only the shell may ever load here. A navigation blanks the view before the
+   replacement paints, and that blank frame is exactly the flash this renderer
+   exists to avoid, so links go through the script message channel instead. */
 void QSPWebTextBox::OnWebViewNavigating(wxWebViewEvent& event)
 {
     if (event.GetURL() != m_shellUrl && event.GetURL() != wxT("about:blank"))

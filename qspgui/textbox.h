@@ -39,6 +39,11 @@
         // Accessors
         void SetIsHtml(bool isHtml);
         void SetText(const wxString& text, bool toScroll = false);
+        /* This renderer repaints synchronously inside the frame's Freeze(), so
+           a half-built state can never reach the screen and there is nothing to
+           batch. Present so both renderers share an interface. */
+        void BeginUpdate() {}
+        void EndUpdate() {}
         void SetTextFont(const wxFont& font);
         wxFont GetTextFont() const { return m_font; }
         wxString GetText() const { return m_text; }

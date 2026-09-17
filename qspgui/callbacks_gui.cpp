@@ -90,6 +90,13 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     bool toScroll, canSave;
     if (m_frame->ToQuit()) return 0;
     changedState = QSPGetWindowsChangedState();
+    /* Hold the description panes back until everything below has been worked
+       out, then let each apply its changes in one go - the engine often clears
+       a pane and refills it during the same refresh. */
+    m_frame->GetDesc()->BeginUpdate();
+    m_frame->GetVars()->BeginUpdate();
+    wxON_BLOCK_EXIT_OBJ0(*m_frame->GetVars(), QSPMainTextBox::EndUpdate);
+    wxON_BLOCK_EXIT_OBJ0(*m_frame->GetDesc(), QSPMainTextBox::EndUpdate);
     // -------------------------------
     toScroll = !(QSPGetNumVarValue(QSP_STATIC_STR(QSP_FMT("DISABLESCROLL")), 0, &numVal) && numVal);
     canSave = !(QSPGetNumVarValue(QSP_STATIC_STR(QSP_FMT("NOSAVE")), 0, &numVal) && numVal);
@@ -141,6 +148,11 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
         m_frame->GetDesc()->LoadBackImage(wxEmptyString);
     // -------------------------------
     m_frame->ApplyParams();
+    /* Everything is settled, so apply it now rather than at scope exit: the
+       forced branch below paints and pumps the loop, and must not show the
+       previous refresh's content. The guards above become no-ops. */
+    m_frame->GetDesc()->EndUpdate();
+    m_frame->GetVars()->EndUpdate();
     if (isForced)
     {
         m_frame->EnableControls(false, true);

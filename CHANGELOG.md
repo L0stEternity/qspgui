@@ -23,32 +23,54 @@ media formats and CSS. The classic renderer remains the default and is unchanged
 
 ### Fixed
 
-- **Flicker on every action in real games.** Games rebuild their whole description
-  on each refresh through the usual `GS`/`GOSUB` chain, so the incoming HTML almost
-  always differs somewhere — a clock, a counter, a stat bar — even when the visible
-  media is identical. The renderer was assigning `innerHTML`, which destroys and
-  recreates every node; a recreated `<img>` is re-fetched, re-decoded and re-laid-out,
-  and the browser paints the gap before it finishes. Panes carrying icons or images
-  therefore flashed on every single action.
+- **Flashing on every action in real games.** `QSPFrame::ShowPane` froze and thawed
+  the whole frame on entry, before deciding whether anything needed to change —
+  and games call it constantly through `SHOWSTAT` / `SHOWACTS` / `SHOWOBJS`, nearly
+  always with the pane already in the state being asked for. A trace of one MAESTAT
+  session recorded 283 of these cycles, arriving in bursts of four to six
+  immediately before every content update, none of which changed the layout.
 
-  The classic renderer does not show this because `SetPage` runs inside
-  `Freeze()`/`Thaw()` and wxHtmlWindow decodes images synchronously, so its repaint is
-  atomic. A browser engine updates asynchronously, which makes the teardown visible.
+  `wxWindowBase::Freeze()` recurses into every child, so each cycle sent
+  `WM_SETREDRAW FALSE`/`TRUE` plus a refresh to the browser control. Ordinary
+  controls satisfy that refresh synchronously, which is why the action and status
+  panes never showed it; a browser re-composites on its own schedule, so it went
+  blank and filled in a frame or more later. Freezing now wraps only an actual
+  relayout.
 
-  The shell now reconciles the existing DOM against the new markup and touches only
-  what actually differs, so an element whose attributes are unchanged — an `<img>`
-  with the same `src` above all — is never recreated. Note this is a DOM teardown, not
-  a page reload: navigation is vetoed after the shell loads, and the document is only
-  ever re-navigated when the game folder changes.
+- **Blanking while a pane was being rebuilt.** Anything that replaces the document,
+  or the content of the live one, is shown *while it is still being built*.
+  A navigation blanks the view before the new page paints. Assigning `innerHTML` tears the old tree
+  down first, and a freshly created `<img>` is re-fetched, re-decoded and
+  re-laid-out with the browser painting the gap in between. The classic renderer
+  has neither problem: `wxHtmlWindow` decodes synchronously inside
+  `Freeze()`/`Thaw()`, so it steps from one finished state straight to the next
+  and the intermediate state never exists.
+
+  The renderer now does the same thing explicitly. The document holds two stacked
+  layers that differ only in which is visible. An update fills the *hidden* layer,
+  waits until it is laid out and its images and videos have loaded, and only then
+  swaps which layer is visible, inside a single animation frame. The old content
+  stays on screen the whole time, so there is no blank frame and no half-decoded
+  image. A slow or missing asset cannot strand the pane on stale content: the swap
+  happens anyway after 400 ms.
 
 ### Implementation notes
 
 These are the details that make the port behave; they are easy to get wrong.
 
-- **No flicker on location change.** The shell document is loaded once and never
-  navigated again. Text updates replace a subtree via `innerHTML` on the live DOM,
-  so the compositor has nothing to repaint from scratch. Any navigation after the
-  shell is up is vetoed.
+- **The document is never navigated after startup.** A navigation blanks the view
+  first, which is the flash this renderer exists to avoid, so any navigation once
+  the shell is up is vetoed and links are routed through the script message
+  channel. The single exception is a game folder change — once per game load,
+  never per location.
+- **Updates are coalesced per refresh.** A refresh sets text, colours, font and
+  background separately, and the engine often clears a pane and refills it in the
+  same pass. `BeginUpdate`/`EndUpdate` around the refresh, plus a deferred flush,
+  collapse all of that into one staged update.
+- **The shell URL carries a hash of the shell.** It is fetched through the
+  browser's cache, so without this a build that changes the shell would keep being
+  served the previous version — a document with no update function in it, i.e. a
+  permanently blank pane.
 - **Scripts are always run asynchronously.** QSP callbacks fire from inside engine
   script execution, and the synchronous `RunScript` pumps a nested message loop,
   which re-enters the engine.

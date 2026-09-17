@@ -15,6 +15,7 @@ CTestTestfile.cmake
 _deps
 /cmake-build-debug/
 /cmake-build-release/
+qspgui-5.9.5-win32
 
 # Compiled Object files
 *.slo
@@ -54,3 +55,6 @@ _deps
 
 # Idea files
 /.idea/
+
+
+Qqsp_QT5.lnk
