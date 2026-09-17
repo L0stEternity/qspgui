@@ -208,23 +208,6 @@ void QSPWebTextBox::WriteShellFile()
         wxT("window.qspSetBase=function(href){base.href=href;};\n")
         wxT("window.qspSetStyle=function(name,value){")
         wxT("document.documentElement.style.setProperty(name,value);};\n")
-        /* $SETMAINDESCHEAD. Games written for a persistent-document player put
-           their stylesheet here once and never repeat it, so it has to live in
-           the head and survive the content rebuilds - dropping it back into the
-           body would lose it on the very next refresh. */
-        wxT("var qspHeadNodes=[],qspHeadHtml=null;\n")
-        wxT("window.qspSetHead=function(html){\n")
-        wxT("  if(qspHeadHtml===html)return;\n")
-        wxT("  qspHeadHtml=html;\n")
-        wxT("  for(var i=0;i<qspHeadNodes.length;i++){\n")
-        wxT("    var o=qspHeadNodes[i];if(o.parentNode)o.parentNode.removeChild(o);}\n")
-        wxT("  qspHeadNodes=[];\n")
-        wxT("  var holder=document.createElement('div');\n")
-        wxT("  holder.innerHTML=html;\n")
-        wxT("  while(holder.firstChild){\n")
-        wxT("    var n=holder.firstChild;holder.removeChild(n);\n")
-        wxT("    document.head.appendChild(n);qspHeadNodes.push(n);}\n")
-        wxT("};\n")
         /* Games rebuild their whole description on every refresh (the usual
            GOSUB chain), so the incoming HTML nearly always differs in some
            small way - a clock, a counter - while the bulk of it, images
@@ -258,52 +241,11 @@ void QSPWebTextBox::WriteShellFile()
         wxT("  while(tc){tn=tc.nextSibling;target.removeChild(tc);tc=tn;}\n")
         wxT("}\n")
         wxT("var qspStage=document.createElement('div');\n")
-        wxT("function qspMediaKey(el){\n")
-        wxT("  var t=el.tagName;\n")
-        wxT("  if(t!=='IMG'&&t!=='VIDEO'&&t!=='AUDIO'&&t!=='SOURCE')return null;\n")
-        wxT("  return t+'|'+(el.getAttribute('src')||'');\n")
-        wxT("}\n")
-        /* Matching children by position alone is not enough: these games shift
-           the node sequence constantly (a clock, a stat, an extra <br>), and a
-           single insertion early on makes every later pair mismatch, so live
-           images get thrown away and rebuilt. The tags carry no width/height,
-           so a rebuilt image has no intrinsic size until it decodes - the
-           layout collapses for a frame and snaps back. That is the blink.
-           Match media by src instead and move the live element into place. */
-        wxT("function qspReuseMedia(){\n")
-        wxT("  var live={},i,k,keep,el;\n")
-        wxT("  var have=content.querySelectorAll('img,video,audio,source');\n")
-        wxT("  for(i=0;i<have.length;i++){k=qspMediaKey(have[i]);if(k&&!live[k])live[k]=have[i];}\n")
-        wxT("  var want=qspStage.querySelectorAll('img,video,audio,source');\n")
-        wxT("  for(i=0;i<want.length;i++){\n")
-        wxT("    el=want[i];k=qspMediaKey(el);\n")
-        wxT("    if(!k)continue;\n")
-        wxT("    keep=live[k];\n")
-        wxT("    if(!keep||!el.parentNode)continue;\n")
-        wxT("    live[k]=null;\n") // never reuse the same live node twice
-        wxT("    qspMorphAttrs(keep,el);\n")
-        wxT("    el.parentNode.replaceChild(keep,el);\n")
-        wxT("  }\n")
-        wxT("}\n")
-        wxT("function qspApply(html,toBottom){\n")
+        wxT("window.qspSetContent=function(html,toBottom){\n")
         wxT("  qspStage.innerHTML=html;\n")
-        wxT("  qspReuseMedia();\n")
         wxT("  qspMorph(content,qspStage);\n")
         wxT("  document.body.scrollTop=toBottom?document.body.scrollHeight:0;\n")
         wxT("  document.documentElement.scrollTop=toBottom?document.documentElement.scrollHeight:0;\n")
-        wxT("}\n")
-        /* A single action can drive several refreshes through its GOSUB chain,
-           and each one painted separately is a separate visible blink. Collapse
-           a burst into the final state. A timer rather than requestAnimationFrame
-           so updates still land while the pane is hidden or occluded. */
-        wxT("var qspPending=null,qspTimer=0;\n")
-        wxT("window.qspSetContent=function(html,toBottom){\n")
-        wxT("  qspPending={h:html,b:toBottom};\n")
-        wxT("  if(qspTimer)return;\n")
-        wxT("  qspTimer=setTimeout(function(){\n")
-        wxT("    qspTimer=0;var p=qspPending;qspPending=null;\n")
-        wxT("    if(p)qspApply(p.h,p.b);\n")
-        wxT("  },16);\n")
         wxT("};\n")
         wxT("window.qspScrollTo=function(anchor){\n")
         wxT("  var el=anchor?document.getElementById(anchor):null;\n")
@@ -449,26 +391,9 @@ void QSPWebTextBox::PushStyle()
     RunScript(script);
 }
 
-void QSPWebTextBox::PushHead()
-{
-    RunScript(wxString::Format(wxT("qspSetHead(%s);"), ToJsString(m_headContent).wx_str()));
-}
-
-/* Games assign $SETMAINDESCHEAD once and clear the flag that produced it, so
-   the markup must be kept rather than re-requested. */
-void QSPWebTextBox::SetHeadContent(const wxString& head)
-{
-    if (m_headContent != head)
-    {
-        m_headContent = head;
-        PushHead();
-    }
-}
-
 void QSPWebTextBox::RefreshUI()
 {
     PushStyle();
-    PushHead();
     PushContent();
 }
 

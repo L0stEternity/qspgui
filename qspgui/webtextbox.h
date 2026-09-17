@@ -45,9 +45,6 @@
         // Accessors
         void SetIsHtml(bool isHtml);
         void SetText(const wxString& text, bool toScroll = false);
-        /* Markup from $SETMAINDESCHEAD. It lives in the document head so it
-           survives the content rebuilds games do on every refresh. */
-        void SetHeadContent(const wxString& head);
         void SetTextFont(const wxFont& font);
         wxFont GetTextFont() const { return m_font; }
         wxString GetText() const { return m_text; }
@@ -62,7 +59,6 @@
         // Internal methods
         void PushContent();
         void PushStyle();
-        void PushHead();
         void RunScript(const wxString& script);
         void SetupGameFolderAccess();
         bool SetupShellHost();
@@ -87,7 +83,6 @@
         bool m_toUseHtml;
         bool m_toScroll;
         wxString m_text;
-        wxString m_headContent;
         wxString m_backImagePath;
         wxFont m_font;
         wxColour m_linkColor;
