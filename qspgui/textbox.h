@@ -39,6 +39,11 @@
         // Accessors
         void SetIsHtml(bool isHtml);
         void SetText(const wxString& text, bool toScroll = false);
+        /* $SETMAINDESCHEAD carries markup a game wants kept in the document
+           head. This renderer has no document head to put it in and has always
+           ignored the variable; the method exists so both renderers share an
+           interface. */
+        void SetHeadContent(const wxString& WXUNUSED(head)) {}
         void SetTextFont(const wxFont& font);
         wxFont GetTextFont() const { return m_font; }
         wxString GetText() const { return m_text; }

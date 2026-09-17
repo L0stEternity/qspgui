@@ -21,6 +21,22 @@ media formats and CSS. The classic renderer remains the default and is unchanged
     `QSPTextBox`, selected through the `QSPMainTextBox` typedef in `frame.h`.
 - `CHANGELOG.md`.
 
+### Added (compatibility)
+
+- **`$SETMAINDESCHEAD` support.** Games written for a persistent-document player
+  assign this variable once — typically a `<style>` block sizing their images and
+  videos, or a `<link>` to a stylesheet — and then clear the flag that produced it,
+  because they expect the markup to stay in the document head. Neither this player
+  nor the QSP engine handled the variable, so for the classic renderer it was simply
+  an unused variable. A browser-engine renderer *does* have a head, and without this
+  the game's own `img{max-width:…}` rule never applies: every picture renders at full
+  pane width with `height:auto`, so the engine cannot know its height until it
+  decodes and relayouts on each rebuild.
+
+  The head markup is now applied to the document head, where it survives the content
+  rebuilds, and is re-applied after a shell reload. The classic renderer keeps
+  ignoring it, exactly as before.
+
 ### Fixed
 
 - **Flicker on every action in real games.** Games rebuild their whole description

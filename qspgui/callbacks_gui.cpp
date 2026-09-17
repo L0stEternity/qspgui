@@ -96,6 +96,11 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     m_isHtml = QSPGetNumVarValue(QSP_STATIC_STR(QSP_FMT("USEHTML")), 0, &numVal) && numVal;
     // -------------------------------
     m_frame->GetDesc()->SetIsHtml(m_isHtml);
+    /* Markup the game wants kept in the document head - typically the
+       stylesheet that sizes its images and videos. It is assigned once and not
+       repeated, so it cannot live in the description text itself. */
+    if (QSPGetStrVarValue(QSP_STATIC_STR(QSP_FMT("SETMAINDESCHEAD")), 0, &strVal))
+        m_frame->GetDesc()->SetHeadContent(qspToWxString(strVal));
     if (changedState & QSP_WIN_MAIN)
     {
         QSPString mainDesc = QSPGetMainDesc();
