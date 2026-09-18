@@ -115,6 +115,9 @@ is a round trip through a save:
 | `setVars` | `vars[{name,value,index,append}]`, `refresh` | `ok`, `count`, `loc` |
 | `watch` | `names[]`, `reset` | `count`, `names[]` |
 | `trace` | `enabled`, `lines`, `vars`, `locs[]`, `limit` | `enabled`, `lines`, `vars`, `locs[]`, `limit` |
+| `break` | `action` (`set`\|`clear`\|`clearAll`\|`list`), `loc`, `line` | `breakpoints[{loc,line}]` |
+| `pause` | — | `pending`, `paused` |
+| `resume` | `mode` (`run`\|`step`\|`stepLoc`) | `ok`, `wasPaused`, `mode` |
 | `goto` | `loc`, `args[]`, `sub` | `ok`, `loc` |
 | `reload` | see above | see above |
 | `snapshot` | `slot` | `slot`, `size`, `loc` |
@@ -302,10 +305,94 @@ once the interpreter is off the stack, for the same reason commands are.
 | `gameOpened` | `path`, `locations` |
 | `varsChanged` | `reason`, `loc`, `changes[]` — see above |
 | `trace` | `dropped`, `events[]` — see above |
+| `paused` | `reason`, `loc`, `actIndex`, `lineNum`, `line` — see below |
+| `resumed` | `loc` |
+| `scriptError` | `kind` (`error`\|`warning`\|`resource`), `text`, `where`, `pane` |
 
 `error` carries enough to put a marker on the failing line in an editor:
 `loc` plus `topLineNum` locates it in the location's code, and `actIndex` says
 whether the failure was in the body (`-1`) or in one of the base actions.
+
+## Breakpoints and stepping
+
+The engine has no debugger of its own. What it has is a callback per executed
+line, which is enough to decide whether to stop — and stopping means simply not
+returning from that callback.
+
+```jsonc
+--> {"jsonrpc":"2.0","id":1,"method":"break",
+     "params":{"action":"set","loc":"forest","line":12}}
+<-- {"jsonrpc":"2.0","id":1,"result":{"breakpoints":[{"loc":"FOREST","line":12}]}}
+
+<-- {"jsonrpc":"2.0","method":"paused","params":{
+      "reason":"breakpoint","loc":"forest","actIndex":-1,
+      "lineNum":12,"line":"gold = gold + 10"}}
+```
+
+Omitting `line`, or passing `0`, breaks on **any** line in that location — which
+is what an editor wants for "stop when the player gets here". Location names are
+matched case-insensitively and reported upper-cased, the way the engine holds
+them.
+
+`pause` is a request rather than an immediate stop: the player sitting on a
+location is not executing anything, so it is honoured at the next line that does
+run. `resume` lets go again, and `mode` chooses what happens next:
+
+| mode | stops at |
+| --- | --- |
+| `run` | the next breakpoint |
+| `step` | the very next executed line |
+| `stepLoc` | the next line in a different location |
+
+`reason` on `paused` is `breakpoint`, `step` or `pause` accordingly.
+
+### What you can do while it is stopped
+
+Stopping means not returning from the engine's per-line callback, with game
+code still on the stack. While it is held the player does **not** run its event
+loop at all: the sockets are read directly, nothing is dispatched through the
+normal path, and the window stops repainting. That is what being stopped in a
+debugger looks like, and it is what makes it safe.
+
+Only the commands that cannot call back into the interpreter are answered:
+
+`resume`, `pause`, `break`, `ping`, `hello`, `getVar`.
+
+`getVar` is in because it only reads a variable's values, which is the same
+thing the trace already does from this callback. `state`, `vars`, `varNames`,
+`locations`, `locationCode` and `trace` are out despite being reads — they
+evaluate `$CURLOC` through the interpreter, and they read the action and
+description buffers while the engine is half way through rebuilding them.
+
+Everything else — `exec`, `eval`, `setVar`, `setVars`, `goto`, `reload`,
+`snapshot`, `restore`, `restart` — keeps its place in the queue and runs on the
+resume. It is late, not refused: the response arrives once the engine is free.
+
+Losing every client resumes the game rather than leaving the player wedged on a
+breakpoint nobody is left to clear. A client that disconnects while the game is
+stopped is left alone until then rather than torn down mid-pause.
+
+The debug callback is installed only while something wants it — tracing, a
+breakpoint, or a step that has been asked for and not yet given — so an ordinary
+session pays nothing for this.
+
+## Errors in a game's own JavaScript
+
+Under the web renderer, `$USERJS` is a supported feature, so a game's script
+failing has to be visible somewhere. Anything the shell catches is pushed:
+
+```jsonc
+<-- {"jsonrpc":"2.0","method":"scriptError","params":{
+      "kind":"error","text":"TypeError: qsp.getVarr is not a function",
+      "where":"https://qsp.game/ui/hud.js:14:3","pane":"main"}}
+```
+
+`kind` is `error` (a throw, a rejected promise, or `console.error`), `warning`
+(`console.warn`) or `resource` (a script, image or video that would not load,
+with the URL in `where`). `pane` says which document it came from — `main`,
+`vars`, `actions`, `objects` or `image`.
+
+The same text goes to the player's log, which is what `--log-file` is for.
 
 ## Threading and re-entrancy
 

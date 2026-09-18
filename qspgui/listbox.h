@@ -48,6 +48,10 @@
         void SetPathProvider(PathProvider *provider) { m_pathProvider = provider; }
 
         // Accessors
+        /* Game-supplied CSS needs a real browser engine, so the classic
+           renderer ignores it. Present so both renderers share an interface. */
+        void SetUserStyles(const wxString& WXUNUSED(inlineCss),
+                           const wxArrayString& WXUNUSED(files)) {}
         void SetIsHtml(bool isHtml);
         void SetToShowNums(bool toShow);
         void SetTextFont(const wxFont& font);

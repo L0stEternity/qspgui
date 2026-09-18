@@ -32,6 +32,12 @@
         // C-tors / D-tor
         QSPTextBox(wxWindow *parent, wxWindowID id);
 
+        /* There is no browser here to open devtools on, and no game-supplied
+           JS for them to debug. Present so both renderers share an interface. */
+        static void EnableDevMode(bool WXUNUSED(isOn)) {}
+        static bool IsDevModeEnabled() { return false; }
+        void ShowDevTools() {}
+
         // Methods
         void RefreshUI();
         void LoadBackImage(const wxString& imagePath);

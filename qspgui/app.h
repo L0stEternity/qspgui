@@ -38,6 +38,8 @@
         virtual bool OnCmdLineParsed(wxCmdLineParser &parser);
     protected:
         void InitUI();
+        void SetupLogging();
+        void CloseLogging();
         bool GetAutoRunEvent(wxInitEvent& initEvent);
         // Fields
         QSPTranslationHelper *m_transHelper;
@@ -45,6 +47,12 @@
         bool m_isDevMode = false;
         unsigned short m_devPort = QSP_DEV_DEFAULTPORT;
         wxString m_devToken;
+        /* Kept open for the lifetime of the app: the active wxLog target
+           writes straight into it, so it can only be closed after that
+           target has been replaced. */
+        FILE *m_logFile = NULL;
+        wxString m_logPath;
+        wxLogLevel m_logLevel = wxLOG_Message;
     };
 
 #endif

@@ -17,6 +17,93 @@
 
 #include "comtools.h"
 
+#include <wx/file.h>
+#include <qsp_default.h>
+
+wxString QSPPaths::ComposeContained(const wxString &baseDir, const wxString &relativePath)
+{
+    if (baseDir.IsEmpty() || relativePath.IsEmpty())
+        return wxEmptyString;
+
+    /* wxPATH_DOS throughout, not the native format: a game written on Windows
+       uses backslashes and is expected to run everywhere, so its separators
+       have to be understood on every platform rather than treated as ordinary
+       characters in a file name. */
+    wxFileName fullPath(baseDir + relativePath, wxPATH_DOS);
+    fullPath.MakeAbsolute();
+    wxString normalizedPath(fullPath.GetFullPath());
+    if (normalizedPath.StartsWith(baseDir))
+        return normalizedPath;
+
+    return wxEmptyString;
+}
+
+bool QSPPaths::IsContained(const wxString &baseDir, const wxString &path)
+{
+    /* Empty is how the engine asks for a file dialog rather than naming a
+       file, so it is not an escape attempt. */
+    if (path.IsEmpty())
+        return true;
+    if (baseDir.IsEmpty())
+        return false;
+
+    wxFileName fullPath(path);
+    fullPath.MakeAbsolute();
+    return fullPath.GetFullPath().StartsWith(baseDir);
+}
+
+bool QSPFileIO::Read(const wxString &path, std::vector<char> &data)
+{
+    data.clear();
+    wxFile file(path, wxFile::read);
+    if (!file.IsOpened()) return false;
+
+    wxFileOffset length = file.Length();
+    /* Length() answers wxInvalidOffset for anything that isn't a plain file */
+    if (length == wxInvalidOffset) return false;
+    if (length == 0) return true;
+    /* The engine takes sizes as int, so a file it could never address is
+       rejected here rather than wrapping into a small allocation */
+    if (length > (wxFileOffset)INT_MAX) return false;
+
+    data.resize((size_t)length);
+    return file.Read(&data[0], data.size()) == (ssize_t)data.size();
+}
+
+bool QSPFileIO::Write(const wxString &path, const void *data, size_t size)
+{
+    wxFile file(path, wxFile::write);
+    if (!file.IsOpened()) return false;
+    if (size == 0) return true;
+    return file.Write(data, size) == size;
+}
+
+/* 64 KB covers an ordinary session in one call; the retries are for the games
+   that carry a large array around. The count is capped because the loop's exit
+   depends on the engine reporting a size that eventually fits, and a bug there
+   would otherwise hang the player instead of failing the save. */
+bool QSPGameState::Save(std::vector<char> &data, bool toRefreshUI)
+{
+    const int maxAttempts = 8;
+    QSP_BOOL refresh = toRefreshUI ? QSP_TRUE : QSP_FALSE;
+    int size = 64 * 1024;
+
+    data.resize((size_t)size);
+    for (int attempt = 0; attempt < maxAttempts; ++attempt)
+    {
+        if (QSPSaveGameAsData(&data[0], &size, refresh))
+        {
+            data.resize((size_t)size);
+            return true;
+        }
+        /* Zero means the save itself failed, not that the buffer was small */
+        if (size <= 0) break;
+        data.resize((size_t)size);
+    }
+    data.clear();
+    return false;
+}
+
 void QSPTools::LaunchDefaultBrowser(const wxString& url)
 {
     /* Validate URLs, don't allow opening files & directories */
@@ -41,6 +128,11 @@ void QSPTools::LaunchDefaultBrowser(const wxString& url)
 wxString QSPTools::GetHexColor(const wxColour& color)
 {
     return wxString::Format(wxT("%.2X%.2X%.2X"), (int)color.Red(), (int)color.Green(), (int)color.Blue());
+}
+
+unsigned long QSPTools::PackColor(const wxColour& color)
+{
+    return ((unsigned long)color.Blue() << 16) | ((unsigned long)color.Green() << 8) | color.Red();
 }
 
 wxString QSPTools::HtmlizeWhitespaces(const wxString& str)

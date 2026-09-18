@@ -19,6 +19,8 @@
     #define CALLBACKS_GUI_H
 
     #include <map>
+    #include <vector>
+    #include <string.h>
     #include <qsp_default.h>
     #include "frame.h"
     #include "msgdlg.h"
@@ -105,6 +107,30 @@
     {
         return wxString(s.Str, s.End);
     }
+
+    /* A writable copy of a string handed to the engine.
+
+       qspPrepareStringToExecution upper-cases code in place, so anything
+       passed to QSPExecString, QSPExecLocationCode or the expression calls has
+       to live in a buffer the engine may scribble on: writing through
+       wxString::c_str() is undefined behaviour, and a string literal would
+       fault outright. The copy lives as long as the temporary, i.e. until the
+       end of the call it is an argument to. */
+    class QSPMutableString
+    {
+    public:
+        explicit QSPMutableString(const wxString &text)
+            : m_buffer(text.length() + 1, 0)
+        {
+            if (text.length())
+                memcpy(&m_buffer[0], text.wc_str(), text.length() * sizeof(QSP_CHAR));
+        }
+
+        operator QSPString() { return qspStringFromLen(&m_buffer[0], (int)m_buffer.size() - 1); }
+
+    private:
+        std::vector<QSP_CHAR> m_buffer;
+    };
 
     /* Helpers */
     #define QSP_STATIC_LEN(x) (sizeof(x) / sizeof(QSP_CHAR) - 1)

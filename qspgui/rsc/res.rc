@@ -3,5 +3,41 @@
 #endif
 #include "wx/msw/wx.rc"
 #include "resource.h"
+#include "qspgui_config.h"
 
 IDI_LOGO ICON "misc/icons/logo.ico"
+
+/* File properties in Explorer, and what the installer and update check read
+   back off the binary. Without this block the exe reports no version at all. */
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    QSPGUI_VER_MAJOR,QSPGUI_VER_MINOR,QSPGUI_VER_PATCH,0
+PRODUCTVERSION QSPGUI_VER_MAJOR,QSPGUI_VER_MINOR,QSPGUI_VER_PATCH,0
+FILEFLAGSMASK  0x3fL
+#ifdef _DEBUG
+FILEFLAGS      VS_FF_DEBUG
+#else
+FILEFLAGS      0x0L
+#endif
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_APP
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0" /* U.S. English, Unicode */
+        BEGIN
+            VALUE "CompanyName",      "QSP Foundation"
+            VALUE "FileDescription",  "QSP Classic player"
+            VALUE "FileVersion",      QSPGUI_VER_STR
+            VALUE "InternalName",     "qspgui"
+            VALUE "LegalCopyright",   "Copyright (C) 2001-2025 QSP Foundation"
+            VALUE "OriginalFilename", "qspgui.exe"
+            VALUE "ProductName",      "Quest Soft Player"
+            VALUE "ProductVersion",   QSPGUI_VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

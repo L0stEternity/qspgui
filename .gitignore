@@ -16,6 +16,7 @@ _deps
 /cmake-build-debug/
 /cmake-build-release/
 qspgui-5.9.5-win32
+build_release_win32
 
 # Compiled Object files
 *.slo

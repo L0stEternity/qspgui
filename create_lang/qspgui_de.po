@@ -349,3 +349,30 @@ msgstr "Dieses Spiel erlaubt kein Speichern"
 
 msgid "Couldn't write the quick save"
 msgstr "Schnellspeicherung konnte nicht geschrieben werden"
+
+msgid "Follow s&ystem light / dark theme"
+msgstr "S&ystemdesign hell / dunkel folgen"
+
+msgid "Save to slo&t"
+msgstr "In Pla&tz speichern"
+
+msgid "Load from slo&t"
+msgstr "Aus Pla&tz laden"
+
+msgid "&%d: empty"
+msgstr "&%d: leer"
+
+msgid "saved"
+msgstr "gespeichert"
+
+msgid "Saved to slot %d"
+msgstr "In Platz %d gespeichert"
+
+msgid "Couldn't write slot %d"
+msgstr "Platz %d konnte nicht geschrieben werden"
+
+msgid "Slot %d is empty"
+msgstr "Platz %d ist leer"
+
+msgid "Loaded slot %d"
+msgstr "Platz %d geladen"

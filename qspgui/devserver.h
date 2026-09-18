@@ -20,7 +20,9 @@
 
     #include <wx/wx.h>
     #include <wx/socket.h>
+    #include "devjson.h"
     #include <map>
+    #include <set>
     #include <string>
     #include <vector>
 
@@ -43,67 +45,6 @@
 
         inline bool IsEngineBusy() { return g_engineDepth > 0; }
     }
-
-    /* ------------------------------------------------------------------ */
-    /* Minimal JSON support. The protocol only ever nests one level deep,
-       so incoming objects are split into raw per-key tokens and decoded on
-       demand instead of being parsed into a full document tree. */
-    /* ------------------------------------------------------------------ */
-
-    class QSPJsonReader
-    {
-    public:
-        bool Parse(const wxString &text);
-
-        bool Has(const wxString &key) const;
-        wxString GetString(const wxString &key, const wxString &defValue = wxEmptyString) const;
-        long GetInt(const wxString &key, long defValue = 0) const;
-        bool GetBool(const wxString &key, bool defValue = false) const;
-        /* Verbatim token, for values that are themselves objects or arrays */
-        wxString GetRaw(const wxString &key) const;
-        std::vector<wxString> GetStringArray(const wxString &key) const;
-        /* Array items kept verbatim, for arrays of objects */
-        std::vector<wxString> GetRawArray(const wxString &key) const;
-
-        static bool DecodeString(const wxString &token, wxString &result);
-
-    private:
-        static bool SkipSpace(const wxString &text, size_t &pos);
-        static bool ReadToken(const wxString &text, size_t &pos, wxString &token);
-
-        std::map<wxString, wxString> m_fields;
-    };
-
-    class QSPJsonBuilder
-    {
-    public:
-        QSPJsonBuilder() : m_needComma(false) {}
-
-        void StartObject();
-        void EndObject();
-        void StartArray();
-        void EndArray();
-        void Key(const wxString &key);
-        void ValueString(const wxString &value);
-        void ValueInt(long value);
-        void ValueBool(bool value);
-        void ValueNull();
-        void ValueRaw(const wxString &json);
-
-        void Member(const wxString &key, const wxString &value);
-        void MemberInt(const wxString &key, long value);
-        void MemberBool(const wxString &key, bool value);
-
-        const wxString &GetText() const { return m_out; }
-
-        static wxString Escape(const wxString &text);
-
-    private:
-        void Separate();
-
-        wxString m_out;
-        bool m_needComma;
-    };
 
     /* ------------------------------------------------------------------ */
     /* Development API server.
@@ -129,6 +70,10 @@
         void NotifyError();
         void NotifyMessage(const wxString &text);
         void NotifyGameOpened(const wxString &path);
+        /* Something the game's own JavaScript did wrong, reported by the web
+           renderer's shell. Kind is "error", "warning" or "resource". */
+        void NotifyScriptDiag(const wxString &kind, const wxString &text,
+                              const wxString &where, const wxString &pane);
 
         /* Called from the engine's debug callback, once per executed line */
         void OnDebugLine(const wxString &line);
@@ -169,6 +114,9 @@
         bool CmdSetVars(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdWatch(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdTrace(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdBreak(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdPause(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdResume(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
 
         /* Helpers */
         bool TakeSnapshot(std::vector<char> &snapshot, wxString &errorText);
@@ -193,6 +141,37 @@
         /* Tracing */
         void SetTracing(bool isOn);
         void FlushTrace();
+        void RecordTrace(const wxString &loc, int actIndex, int lineNum, const wxString &line);
+
+        /* Breakpoints and stepping.
+
+           The engine has no debugger of its own; what it has is a callback per
+           executed line, which is enough to decide whether to stop. Stopping
+           means not returning from that callback, so the pause is a nested
+           event loop with game code still on the stack - which is why only the
+           commands that read state are served while it is held. */
+        enum StepMode
+        {
+            Step_None = 0,
+            Step_Line,     /* stop at the very next line */
+            Step_Location  /* stop at the next line in a different location */
+        };
+
+        /* Installs or removes the engine's debug callback to match what is
+           actually being asked of it */
+        void UpdateDebugHook();
+        /* Not const: a step or a one-shot pause request is consumed here */
+        bool TakeBreakDecision(const wxString &loc, int lineNum, wxString &reason);
+        void EnterPause(const wxString &reason, const wxString &loc, int actIndex,
+                        int lineNum, const wxString &line);
+        /* One pass over the connected clients while the game is stopped.
+           Reads them directly rather than pumping the event loop - see
+           EnterPause for why that is not an option. False when nobody is left
+           who could resume us. */
+        bool ServePaused();
+        void HandlePausedLine(wxSocketBase *socket, const wxString &line);
+        static bool IsPauseSafeMethod(const wxString &method);
+        static wxString MakeBreakKey(const wxString &loc, long lineNum);
 
         struct PendingCommand
         {
@@ -257,6 +236,15 @@
         int m_traceLimit;
         int m_traceDropped;
         std::vector<TraceEvent> m_traceEvents;
+
+        /* "LOCNAME:line", with line 0 meaning any line in that location */
+        std::set<wxString> m_breakpoints;
+        bool m_paused;
+        /* A "pause" command, honoured at the next executed line and then
+           forgotten - the engine may not be running any at the moment. */
+        bool m_breakRequested;
+        int m_stepMode;
+        wxString m_stepFromLoc;
     };
 
 #endif

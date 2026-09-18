@@ -22,6 +22,7 @@
 
 #include <wx/base64.h>
 #include <set>
+#include <limits.h>
 #include <wx/file.h>
 #include <wx/filename.h>
 
@@ -44,6 +45,11 @@ enum
    counter rather than gigabytes of queued JSON. */
 #define QSP_DEV_TRACELIMIT 2000
 #define QSP_DEV_MAXVALUES 32
+/* A single request has to fit in one line; "reload" sends a base64 world */
+#define QSP_DEV_MAXREQUEST (96u * 1024u * 1024u)
+/* A client that stops reading while a trace is streaming must not be allowed
+   to grow the player's heap until it dies - it is dropped instead. */
+#define QSP_DEV_MAXOUTBOX (32u * 1024u * 1024u)
 
 /* The engine's debug callback is a plain C function pointer with nowhere to
    put a context argument, so the server that asked for tracing is reachable
@@ -56,427 +62,12 @@ static void QSPDevDebugCallback(QSPString line)
 }
 
 /* ------------------------------------------------------------------ */
-/* JSON reader                                                         */
-/* ------------------------------------------------------------------ */
-
-bool QSPJsonReader::SkipSpace(const wxString &text, size_t &pos)
-{
-    while (pos < text.length())
-    {
-        wxUniChar ch = text[pos];
-        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
-            return true;
-        ++pos;
-    }
-    return false;
-}
-
-/* Copies the next value verbatim, whatever its type. Nested containers are
-   tracked by depth so that an object or an array can be handed back as raw
-   text and decoded later only if some command actually needs it. */
-bool QSPJsonReader::ReadToken(const wxString &text, size_t &pos, wxString &token)
-{
-    if (!SkipSpace(text, pos)) return false;
-
-    size_t start = pos;
-    wxUniChar ch = text[pos];
-    if (ch == '"')
-    {
-        ++pos;
-        while (pos < text.length())
-        {
-            wxUniChar cur = text[pos++];
-            if (cur == '\\')
-            {
-                if (pos >= text.length()) return false;
-                ++pos;
-            }
-            else if (cur == '"')
-            {
-                token = text.Mid(start, pos - start);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    if (ch == '{' || ch == '[')
-    {
-        int depth = 0;
-        bool inString = false;
-        while (pos < text.length())
-        {
-            wxUniChar cur = text[pos++];
-            if (inString)
-            {
-                if (cur == '\\')
-                {
-                    if (pos >= text.length()) return false;
-                    ++pos;
-                }
-                else if (cur == '"')
-                    inString = false;
-            }
-            else if (cur == '"')
-                inString = true;
-            else if (cur == '{' || cur == '[')
-                ++depth;
-            else if (cur == '}' || cur == ']')
-            {
-                if (--depth == 0)
-                {
-                    token = text.Mid(start, pos - start);
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    while (pos < text.length())
-    {
-        wxUniChar cur = text[pos];
-        if (cur == ',' || cur == '}' || cur == ']' ||
-            cur == ' ' || cur == '\t' || cur == '\r' || cur == '\n')
-            break;
-        ++pos;
-    }
-    if (pos == start) return false;
-    token = text.Mid(start, pos - start);
-    return true;
-}
-
-bool QSPJsonReader::Parse(const wxString &text)
-{
-    m_fields.clear();
-
-    size_t pos = 0;
-    if (!SkipSpace(text, pos)) return false;
-    if (text[pos] != '{') return false;
-    ++pos;
-
-    if (!SkipSpace(text, pos)) return false;
-    if (text[pos] == '}') return true;
-
-    for (;;)
-    {
-        wxString keyToken;
-        if (!ReadToken(text, pos, keyToken)) return false;
-        wxString key;
-        if (!DecodeString(keyToken, key)) return false;
-
-        if (!SkipSpace(text, pos)) return false;
-        if (text[pos] != ':') return false;
-        ++pos;
-
-        wxString valueToken;
-        if (!ReadToken(text, pos, valueToken)) return false;
-        m_fields[key] = valueToken;
-
-        if (!SkipSpace(text, pos)) return false;
-        wxUniChar ch = text[pos++];
-        if (ch == '}') return true;
-        if (ch != ',') return false;
-    }
-}
-
-bool QSPJsonReader::DecodeString(const wxString &token, wxString &result)
-{
-    result.Clear();
-    if (token.length() < 2 || token[0] != '"') return false;
-
-    for (size_t i = 1; i + 1 < token.length(); ++i)
-    {
-        wxUniChar ch = token[i];
-        if (ch != '\\')
-        {
-            result += ch;
-            continue;
-        }
-        if (++i + 1 > token.length()) return false;
-        wxUniChar esc = token[i];
-        switch (esc.GetValue())
-        {
-        case '"': result += '"'; break;
-        case '\\': result += '\\'; break;
-        case '/': result += '/'; break;
-        case 'b': result += '\b'; break;
-        case 'f': result += '\f'; break;
-        case 'n': result += '\n'; break;
-        case 'r': result += '\r'; break;
-        case 't': result += '\t'; break;
-        case 'u':
-            {
-                if (i + 4 >= token.length()) return false;
-                unsigned long code = 0;
-                for (int digit = 0; digit < 4; ++digit)
-                {
-                    wxUniChar hex = token[++i];
-                    code <<= 4;
-                    if (hex >= '0' && hex <= '9') code |= (unsigned long)(hex.GetValue() - '0');
-                    else if (hex >= 'a' && hex <= 'f') code |= (unsigned long)(hex.GetValue() - 'a' + 10);
-                    else if (hex >= 'A' && hex <= 'F') code |= (unsigned long)(hex.GetValue() - 'A' + 10);
-                    else return false;
-                }
-                result += wxUniChar((wxUint32)code);
-                break;
-            }
-        default:
-            return false;
-        }
-    }
-    return true;
-}
-
-bool QSPJsonReader::Has(const wxString &key) const
-{
-    return m_fields.find(key) != m_fields.end();
-}
-
-wxString QSPJsonReader::GetRaw(const wxString &key) const
-{
-    std::map<wxString, wxString>::const_iterator it = m_fields.find(key);
-    if (it == m_fields.end()) return wxEmptyString;
-    return it->second;
-}
-
-wxString QSPJsonReader::GetString(const wxString &key, const wxString &defValue) const
-{
-    wxString token = GetRaw(key);
-    if (token.IsEmpty()) return defValue;
-    if (token[0] != '"') return token; /* tolerate a bare number or keyword */
-
-    wxString value;
-    if (!DecodeString(token, value)) return defValue;
-    return value;
-}
-
-long QSPJsonReader::GetInt(const wxString &key, long defValue) const
-{
-    wxString token = GetRaw(key);
-    if (token.IsEmpty()) return defValue;
-    if (token[0] == '"')
-    {
-        wxString decoded;
-        if (!DecodeString(token, decoded)) return defValue;
-        token = decoded;
-    }
-    long value;
-    if (!token.ToLong(&value)) return defValue;
-    return value;
-}
-
-bool QSPJsonReader::GetBool(const wxString &key, bool defValue) const
-{
-    wxString token = GetRaw(key);
-    if (token.IsEmpty()) return defValue;
-    if (token == wxT("true")) return true;
-    if (token == wxT("false")) return false;
-    return GetInt(key, defValue ? 1 : 0) != 0;
-}
-
-/* Splits an array into its item tokens, verbatim. Strings keep their quotes;
-   objects and nested arrays come back whole, to be parsed by the caller. */
-std::vector<wxString> QSPJsonReader::GetRawArray(const wxString &key) const
-{
-    std::vector<wxString> items;
-    wxString token = GetRaw(key);
-    if (token.length() < 2 || token[0] != '[') return items;
-
-    size_t pos = 1;
-    if (!SkipSpace(token, pos)) return items;
-    if (token[pos] == ']') return items;
-
-    for (;;)
-    {
-        wxString itemToken;
-        if (!ReadToken(token, pos, itemToken)) break;
-        items.push_back(itemToken);
-
-        if (!SkipSpace(token, pos)) break;
-        wxUniChar ch = token[pos++];
-        if (ch != ',') break;
-    }
-    return items;
-}
-
-std::vector<wxString> QSPJsonReader::GetStringArray(const wxString &key) const
-{
-    std::vector<wxString> items;
-    wxString token = GetRaw(key);
-    if (token.length() < 2 || token[0] != '[') return items;
-
-    size_t pos = 1;
-    if (!SkipSpace(token, pos)) return items;
-    if (token[pos] == ']') return items;
-
-    for (;;)
-    {
-        wxString itemToken;
-        if (!ReadToken(token, pos, itemToken)) break;
-        if (!itemToken.IsEmpty() && itemToken[0] == '"')
-        {
-            wxString item;
-            if (DecodeString(itemToken, item))
-                items.push_back(item);
-        }
-        else
-            items.push_back(itemToken);
-
-        if (!SkipSpace(token, pos)) break;
-        wxUniChar ch = token[pos++];
-        if (ch != ',') break;
-    }
-    return items;
-}
-
-/* ------------------------------------------------------------------ */
-/* JSON builder                                                        */
-/* ------------------------------------------------------------------ */
-
-wxString QSPJsonBuilder::Escape(const wxString &text)
-{
-    wxString out;
-    out.reserve(text.length() + 8);
-    for (wxString::const_iterator it = text.begin(); it != text.end(); ++it)
-    {
-        wxUniChar ch = *it;
-        switch (ch.GetValue())
-        {
-        case '"': out += wxT("\\\""); break;
-        case '\\': out += wxT("\\\\"); break;
-        case '\b': out += wxT("\\b"); break;
-        case '\f': out += wxT("\\f"); break;
-        case '\n': out += wxT("\\n"); break;
-        case '\r': out += wxT("\\r"); break;
-        case '\t': out += wxT("\\t"); break;
-        default:
-            if (ch.GetValue() < 0x20)
-                out += wxString::Format(wxT("\\u%04x"), (unsigned int)ch.GetValue());
-            else
-                out += ch;
-            break;
-        }
-    }
-    return out;
-}
-
-void QSPJsonBuilder::Separate()
-{
-    if (m_needComma) m_out += wxT(",");
-}
-
-void QSPJsonBuilder::StartObject()
-{
-    Separate();
-    m_out += wxT("{");
-    m_needComma = false;
-}
-
-void QSPJsonBuilder::EndObject()
-{
-    m_out += wxT("}");
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::StartArray()
-{
-    Separate();
-    m_out += wxT("[");
-    m_needComma = false;
-}
-
-void QSPJsonBuilder::EndArray()
-{
-    m_out += wxT("]");
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::Key(const wxString &key)
-{
-    Separate();
-    m_out += wxT("\"") + Escape(key) + wxT("\":");
-    m_needComma = false;
-}
-
-void QSPJsonBuilder::ValueString(const wxString &value)
-{
-    Separate();
-    m_out += wxT("\"") + Escape(value) + wxT("\"");
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::ValueInt(long value)
-{
-    Separate();
-    m_out += wxString::Format(wxT("%ld"), value);
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::ValueBool(bool value)
-{
-    Separate();
-    m_out += (value ? wxT("true") : wxT("false"));
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::ValueNull()
-{
-    Separate();
-    m_out += wxT("null");
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::ValueRaw(const wxString &json)
-{
-    Separate();
-    m_out += json;
-    m_needComma = true;
-}
-
-void QSPJsonBuilder::Member(const wxString &key, const wxString &value)
-{
-    Key(key);
-    ValueString(value);
-}
-
-void QSPJsonBuilder::MemberInt(const wxString &key, long value)
-{
-    Key(key);
-    ValueInt(value);
-}
-
-void QSPJsonBuilder::MemberBool(const wxString &key, bool value)
-{
-    Key(key);
-    ValueBool(value);
-}
-
-/* ------------------------------------------------------------------ */
 /* Small QSP helpers                                                   */
 /* ------------------------------------------------------------------ */
 
-/* A writable copy of a string handed to the engine.
-   qspPrepareStringToExecution upper-cases code in place, so anything passed to
-   QSPExecString or the expression calls has to live in a buffer the engine may
-   scribble on - a literal would fault, and a wxString would come back
-   upper-cased. The copy lives as long as the temporary, i.e. until the end of
-   the call it is an argument to. */
-class QSPDevString
-{
-public:
-    explicit QSPDevString(const wxString &text)
-        : m_buffer(text.length() + 1, 0)
-    {
-        if (text.length())
-            memcpy(&m_buffer[0], text.wc_str(), text.length() * sizeof(QSP_CHAR));
-    }
-
-    operator QSPString() { return qspStringFromLen(&m_buffer[0], (int)m_buffer.size() - 1); }
-
-private:
-    std::vector<QSP_CHAR> m_buffer;
-};
+/* Shared with the JS bridge, which hands the engine strings for the same
+   reasons; see QSPMutableString in callbacks_gui.h. */
+typedef QSPMutableString QSPDevString;
 
 /* ------------------------------------------------------------------ */
 /* Server                                                              */
@@ -495,7 +86,10 @@ QSPDevServer::QSPDevServer(QSPFrame *frame)
       m_traceLines(true),
       m_traceLimit(QSP_DEV_TRACELIMIT),
       m_traceDropped(0),
-      m_refreshIsNewDesc(false)
+      m_refreshIsNewDesc(false),
+      m_paused(false),
+      m_breakRequested(false),
+      m_stepMode(Step_None)
 {
 }
 
@@ -538,6 +132,11 @@ bool QSPDevServer::Start(unsigned short port, const wxString &token)
 
 void QSPDevServer::Stop()
 {
+    /* Dropping the clients is what lets a held breakpoint go, but the loop
+       only reads this once it is next round - so the intent is recorded here
+       as well, in case Stop() was itself reached from inside a paused command. */
+    m_paused = false;
+
     while (!m_clients.empty())
         DropClient(m_clients.back());
 
@@ -553,6 +152,10 @@ void QSPDevServer::Stop()
         m_idleHooked = false;
     }
     SetTracing(false);
+    m_breakpoints.clear();
+    m_breakRequested = false;
+    m_stepMode = Step_None;
+    UpdateDebugHook();
     m_pending.clear();
     m_slots.clear();
     m_outbox.clear();
@@ -652,6 +255,16 @@ void QSPDevServer::ReadFrom(wxSocketBase *socket)
         buffer->second.append(chunk, count);
     }
 
+    /* A request has to arrive as one line, so a client that never sends a
+       newline would otherwise grow this without limit. The cap is generous
+       because "reload" carries a whole base64-encoded world. */
+    if (buffer->second.size() > QSP_DEV_MAXREQUEST &&
+        buffer->second.find('\n') == std::string::npos)
+    {
+        DropClient(socket);
+        return;
+    }
+
     /* Requests are newline delimited, so a partial one simply stays in the
        buffer until the rest of it arrives. */
     for (;;)
@@ -682,7 +295,13 @@ void QSPDevServer::Send(wxSocketBase *socket, const wxString &line)
     wxString message(line);
     message += wxT("\n");
     const wxScopedCharBuffer data = message.utf8_str();
-    m_outbox[socket].append(data.data(), data.length());
+    std::string &outbox = m_outbox[socket];
+    if (outbox.size() + data.length() > QSP_DEV_MAXOUTBOX)
+    {
+        DropClient(socket);
+        return;
+    }
+    outbox.append(data.data(), data.length());
     FlushOutbox(socket);
 }
 
@@ -707,10 +326,14 @@ void QSPDevServer::FlushOutbox(wxSocketBase *socket)
 
 void QSPDevServer::Broadcast(const wxString &line)
 {
-    for (size_t i = 0; i < m_clients.size(); ++i)
+    /* Over a copy: a client that has stopped reading is dropped by Send,
+       which takes it out of m_clients mid-loop. */
+    std::vector<wxSocketBase *> clients(m_clients);
+    for (size_t i = 0; i < clients.size(); ++i)
     {
-        if (m_authorized[m_clients[i]])
-            Send(m_clients[i], line);
+        std::map<wxSocketBase *, bool>::const_iterator it = m_authorized.find(clients[i]);
+        if (it != m_authorized.end() && it->second)
+            Send(clients[i], line);
     }
 }
 
@@ -747,7 +370,11 @@ void QSPDevServer::OnIdle(wxIdleEvent &event)
     FlushNotifications();
     for (size_t i = 0; i < m_clients.size(); ++i)
         FlushOutbox(m_clients[i]);
-    if (!m_pending.empty())
+    /* Only ask for another idle turn when the queue could actually move. A
+       command that arrives while a modal dialog is up stays pending for as
+       long as the dialog does, and asking for more there would spin a core
+       until the player closes it; the next real event brings idle back. */
+    if (!m_pending.empty() && !QSPDev::IsEngineBusy())
         event.RequestMore();
     event.Skip();
 }
@@ -901,6 +528,9 @@ bool QSPDevServer::Invoke(const wxString &method, const QSPJsonReader &params, Q
     if (method == wxT("setVars")) return CmdSetVars(params, result, errorText);
     if (method == wxT("watch")) return CmdWatch(params, result, errorText);
     if (method == wxT("trace")) return CmdTrace(params, result, errorText);
+    if (method == wxT("break")) return CmdBreak(params, result, errorText);
+    if (method == wxT("pause")) return CmdPause(params, result, errorText);
+    if (method == wxT("resume")) return CmdResume(params, result, errorText);
     if (method == wxT("goto")) return CmdGoto(params, result, errorText);
     if (method == wxT("reload")) return CmdReload(params, result, errorText);
     if (method == wxT("snapshot")) return CmdSnapshot(params, result, errorText);
@@ -1287,24 +917,16 @@ bool QSPDevServer::CmdGoto(const QSPJsonReader &params, QSPJsonBuilder &result, 
 
 bool QSPDevServer::TakeSnapshot(std::vector<char> &snapshot, wxString &errorText)
 {
-    int size = 64 * 1024;
-    snapshot.resize(size);
-    if (!QSPSaveGameAsData(&snapshot[0], &size, QSP_FALSE))
+    if (!QSPGameState::Save(snapshot, false))
     {
-        /* The engine reports the size it needs through the same argument */
-        if (!size)
-        {
-            errorText = DescribeLastError();
-            return false;
-        }
-        snapshot.resize(size);
-        if (!QSPSaveGameAsData(&snapshot[0], &size, QSP_FALSE))
-        {
-            errorText = DescribeLastError();
-            return false;
-        }
+        errorText = DescribeLastError();
+        return false;
     }
-    snapshot.resize(size);
+    if (snapshot.empty())
+    {
+        errorText = wxT("The engine produced an empty snapshot");
+        return false;
+    }
     return true;
 }
 
@@ -1328,7 +950,7 @@ bool QSPDevServer::CmdRestore(const QSPJsonReader &params, QSPJsonBuilder &resul
 {
     wxString slot = params.GetString(wxT("slot"), wxT("default"));
     std::map<wxString, std::vector<char> >::iterator it = m_slots.find(slot);
-    if (it == m_slots.end())
+    if (it == m_slots.end() || it->second.empty())
     {
         errorText = wxT("No snapshot in slot: ") + slot;
         return false;
@@ -1383,10 +1005,9 @@ bool QSPDevServer::CmdReload(const QSPJsonReader &params, QSPJsonBuilder &result
             errorText = wxT("File not found: ") + path;
             return false;
         }
-        wxFile file(path);
-        wxFileOffset size = file.Length();
-        world.resize((size_t)size);
-        if (size && file.Read(&world[0], (size_t)size) != size)
+        /* An editor that has just written this file may still be holding it
+           open, so the file existing says nothing about it being readable. */
+        if (!QSPFileIO::Read(path, world) || world.empty())
         {
             errorText = wxT("Cannot read ") + path;
             return false;
@@ -1516,6 +1137,23 @@ void QSPDevServer::NotifyGameOpened(const wxString &path)
     params.MemberInt(wxT("locations"), QSPGetLocationNames(0, 0));
     params.EndObject();
     Notify(wxT("gameOpened"), params.GetText());
+}
+
+/* Pushed straight out rather than queued: this arrives from an ordinary event
+   handler with the engine idle, and nothing here touches the engine at all. */
+void QSPDevServer::NotifyScriptDiag(const wxString &kind, const wxString &text,
+                                    const wxString &where, const wxString &pane)
+{
+    if (m_clients.empty()) return;
+
+    QSPJsonBuilder params;
+    params.StartObject();
+    params.Member(wxT("kind"), kind);
+    params.Member(wxT("text"), text);
+    params.Member(wxT("where"), where);
+    params.Member(wxT("pane"), pane);
+    params.EndObject();
+    Notify(wxT("scriptError"), params.GetText());
 }
 
 /* ------------------------------------------------------------------ */
@@ -1906,11 +1544,15 @@ bool QSPDevServer::CollectWatchChanges(QSPJsonBuilder &changes)
 
         if (exists == entry.exists && current == entry.values) continue;
 
+        /* Per entry, not shared with the rest: the fallback below has to know
+           whether *this* variable produced anything, not whether some earlier
+           one did. */
+        bool changed = false;
         size_t shared = (current.size() < entry.values.size() ? current.size() : entry.values.size());
         for (size_t j = 0; j < shared; ++j)
         {
             if (current[j] == entry.values[j]) continue;
-            any = true;
+            changed = true;
             changes.StartObject();
             changes.Member(wxT("name"), entry.name);
             changes.MemberInt(wxT("index"), (long)j);
@@ -1922,7 +1564,7 @@ bool QSPDevServer::CollectWatchChanges(QSPJsonBuilder &changes)
         }
         for (size_t j = shared; j < current.size(); ++j)
         {
-            any = true;
+            changed = true;
             changes.StartObject();
             changes.Member(wxT("name"), entry.name);
             changes.MemberInt(wxT("index"), (long)j);
@@ -1933,7 +1575,7 @@ bool QSPDevServer::CollectWatchChanges(QSPJsonBuilder &changes)
         }
         for (size_t j = shared; j < entry.values.size(); ++j)
         {
-            any = true;
+            changed = true;
             changes.StartObject();
             changes.Member(wxT("name"), entry.name);
             changes.MemberInt(wxT("index"), (long)j);
@@ -1942,9 +1584,9 @@ bool QSPDevServer::CollectWatchChanges(QSPJsonBuilder &changes)
             changes.EndObject();
         }
         /* An emptied variable whose values all vanished still counts as news */
-        if (!any && exists != entry.exists)
+        if (!changed && exists != entry.exists)
         {
-            any = true;
+            changed = true;
             changes.StartObject();
             changes.Member(wxT("name"), entry.name);
             changes.MemberInt(wxT("index"), -1);
@@ -1952,6 +1594,7 @@ bool QSPDevServer::CollectWatchChanges(QSPJsonBuilder &changes)
             changes.EndObject();
         }
 
+        if (changed) any = true;
         entry.exists = exists;
         entry.values.swap(current);
     }
@@ -1992,7 +1635,27 @@ void QSPDevServer::SetTracing(bool isOn)
     if (isOn == m_tracing) return;
 
     m_tracing = isOn;
-    if (isOn)
+    if (!isOn)
+    {
+        m_traceEvents.clear();
+        m_traceDropped = 0;
+        /* The filter is deliberately kept: turning tracing off and on again
+           is how a client steps, and it should not widen each time. */
+    }
+    UpdateDebugHook();
+}
+
+/* The debug callback costs a call per executed line, so it is installed only
+   while something actually wants it - tracing, a breakpoint, or a step the
+   client has asked for and not yet been given. */
+void QSPDevServer::UpdateDebugHook()
+{
+    bool isWanted = m_tracing || !m_breakpoints.empty() || m_breakRequested ||
+                    m_stepMode != Step_None;
+    bool isInstalled = (g_devTraceServer == this);
+    if (isWanted == isInstalled) return;
+
+    if (isWanted)
     {
         g_devTraceServer = this;
         QSPSetCallback(QSP_CALL_DEBUG, (QSP_CALLBACK)&QSPDevDebugCallback);
@@ -2003,26 +1666,33 @@ void QSPDevServer::SetTracing(bool isOn)
         QSPEnableDebugMode(QSP_FALSE);
         QSPSetCallback(QSP_CALL_DEBUG, (QSP_CALLBACK)0);
         g_devTraceServer = 0;
-        m_traceEvents.clear();
-        m_traceDropped = 0;
-        /* The filter is deliberately kept: turning tracing off and on again
-           is how a client steps, and it should not widen each time. */
     }
 }
 
-/* Runs with game code still on the stack, once per executed line. Everything
-   here is a plain read - the current state and, if asked for, the watched
-   values - and the result is queued rather than sent, because the engine must
-   not re-enter and a socket write can fail short. */
+/* Runs with game code still on the stack, once per executed line. The tracing
+   half is all plain reads and queues its result rather than sending it, because
+   a socket write can fail short; the breakpoint half may not return at all
+   until the client resumes. */
 void QSPDevServer::OnDebugLine(const wxString &line)
 {
-    if (!m_tracing || m_clients.empty()) return;
+    if (m_clients.empty()) return;
+    /* Re-entering from inside the pause loop would nest one pause in another */
+    if (m_paused) return;
 
     QSPString execLoc;
     int actIndex = -1, lineNum = 0;
     QSPGetCurStateData(&execLoc, &actIndex, &lineNum);
-
     wxString loc = qspToWxString(execLoc);
+
+    if (m_tracing) RecordTrace(loc, actIndex, lineNum, line);
+
+    wxString reason;
+    if (TakeBreakDecision(loc, lineNum, reason))
+        EnterPause(reason, loc, actIndex, lineNum, line);
+}
+
+void QSPDevServer::RecordTrace(const wxString &loc, int actIndex, int lineNum, const wxString &line)
+{
     if (!m_traceLocs.empty())
     {
         /* Filtered before the event is built, and before the cap is charged:
@@ -2098,6 +1768,307 @@ void QSPDevServer::FlushTrace()
     m_traceEvents.clear();
     m_traceDropped = 0;
     Notify(wxT("trace"), params.GetText());
+}
+
+/* ------------------------------------------------------------------ */
+/* Breakpoints and stepping                                            */
+/* ------------------------------------------------------------------ */
+
+/* Location names are matched case-insensitively, the way the engine matches
+   them, so they are folded once here rather than at every comparison. */
+wxString QSPDevServer::MakeBreakKey(const wxString &loc, long lineNum)
+{
+    wxString upper(loc);
+    upper.MakeUpper();
+    return wxString::Format(wxT("%s:%ld"), upper, lineNum < 0 ? 0 : lineNum);
+}
+
+bool QSPDevServer::TakeBreakDecision(const wxString &loc, int lineNum, wxString &reason)
+{
+    /* A pause asked for while nothing was running: honoured at the first line
+       that does run, and forgotten afterwards. */
+    if (m_breakRequested)
+    {
+        m_breakRequested = false;
+        reason = wxT("pause");
+        return true;
+    }
+    if (m_stepMode == Step_Line)
+    {
+        m_stepMode = Step_None;
+        reason = wxT("step");
+        return true;
+    }
+    if (m_stepMode == Step_Location && !loc.IsSameAs(m_stepFromLoc, false))
+    {
+        m_stepMode = Step_None;
+        reason = wxT("step");
+        return true;
+    }
+    if (m_breakpoints.empty()) return false;
+
+    /* Two lookups rather than a scan: the whole-location form and the exact
+       line. This runs once per executed line, so it has to stay cheap. */
+    if (m_breakpoints.count(MakeBreakKey(loc, 0)) ||
+        m_breakpoints.count(MakeBreakKey(loc, lineNum)))
+    {
+        reason = wxT("breakpoint");
+        return true;
+    }
+    return false;
+}
+
+/* Stops the game where it stands, with the line that triggered it not yet
+   finished. Returning from here is what resumes it, so this holds a nested
+   event loop until the client says to go on.
+
+   Two things make that safe. The windows are disabled for the duration, so a
+   click on an action cannot call the engine from inside the line it is already
+   executing. And the engine is marked busy, which keeps the ordinary command
+   queue from draining - only the commands that read state are dispatched, by
+   DrainWhilePaused. */
+/* Stops the game where it stands, with the line that triggered it not yet
+   finished. Returning from here is what resumes it, so this holds until the
+   client says to go on.
+
+   It deliberately does NOT pump the wxWidgets event loop. That was the first
+   attempt and it is unsound twice over. A breakpoint is reached from inside
+   Dispatch (an "exec" is what ran the code), so m_inCommand is already set and
+   the nested drain could never serve anything - the pause was unbreakable. And
+   a client dropped during the nested pump is destroyed while the outer Dispatch
+   frame still holds its pointer and is about to write its response to it, which
+   is a use-after-free.
+
+   So the sockets are read directly instead. Nothing is dispatched through the
+   normal path, no events run, and no client is ever destroyed while we are
+   standing inside the engine. The window stops repainting for the duration,
+   which is what being stopped in a debugger looks like. */
+void QSPDevServer::EnterPause(const wxString &reason, const wxString &loc, int actIndex,
+                              int lineNum, const wxString &line)
+{
+    if (m_paused || m_clients.empty()) return;
+
+    m_paused = true;
+
+    /* Sent before the loop starts, and flushed by hand: the client is waiting
+       to be told where the game stopped, and nothing else will push it out. */
+    QSPJsonBuilder params;
+    params.StartObject();
+    params.Member(wxT("reason"), reason);
+    params.Member(wxT("loc"), loc);
+    params.MemberInt(wxT("actIndex"), actIndex);
+    params.MemberInt(wxT("lineNum"), lineNum);
+    params.Member(wxT("line"), line);
+    params.EndObject();
+    Notify(wxT("paused"), params.GetText());
+    for (size_t i = 0; i < m_clients.size(); ++i)
+        FlushOutbox(m_clients[i]);
+
+    {
+        /* Marks the engine busy so that if anything does reach DrainQueue it
+           still declines to call in. */
+        QSPDev::EngineScope engineScope;
+
+        /* Losing every client resumes the game rather than wedging the player
+           on a breakpoint nobody is left to clear. */
+        while (m_paused && !m_frame->ToQuit())
+        {
+            if (!ServePaused()) break;
+        }
+    }
+
+    m_paused = false;
+    UpdateDebugHook();
+
+    if (m_clients.empty()) return;
+    QSPJsonBuilder resumed;
+    resumed.StartObject();
+    resumed.Member(wxT("loc"), loc);
+    resumed.EndObject();
+    Notify(wxT("resumed"), resumed.GetText());
+    for (size_t i = 0; i < m_clients.size(); ++i)
+        FlushOutbox(m_clients[i]);
+}
+
+/* One pass over the connected clients while the game is stopped: push whatever
+   is queued for them, then read whatever they have sent.
+
+   Returns false when nobody is left who could resume us. A disconnected client
+   is skipped and left alone - dropping it here would destroy a socket that an
+   outer frame is still holding, which is the crash this rewrite exists to
+   avoid. The ordinary wxSOCKET_LOST path cleans it up once the engine is out. */
+bool QSPDevServer::ServePaused()
+{
+    bool anyConnected = false;
+
+    for (size_t i = 0; i < m_clients.size(); ++i)
+    {
+        wxSocketBase *socket = m_clients[i];
+        if (!socket || !socket->IsConnected()) continue;
+        anyConnected = true;
+
+        FlushOutbox(socket);
+
+        /* The timeout is what keeps this from spinning a core for as long as
+           the breakpoint is held, which can be minutes. */
+        if (!socket->WaitForRead(0, 20)) continue;
+
+        char chunk[4096];
+        socket->Read(chunk, sizeof(chunk));
+        size_t count = socket->LastCount();
+        if (!count) continue;
+
+        std::string &buffer = m_buffers[socket];
+        buffer.append(chunk, count);
+
+        for (;;)
+        {
+            std::string::size_type breakPos = buffer.find('\n');
+            if (breakPos == std::string::npos) break;
+
+            std::string rawLine = buffer.substr(0, breakPos);
+            buffer.erase(0, breakPos + 1);
+            if (!rawLine.empty() && rawLine[rawLine.length() - 1] == '\r')
+                rawLine.erase(rawLine.length() - 1);
+            if (rawLine.empty()) continue;
+
+            HandlePausedLine(socket, wxString::FromUTF8(rawLine.c_str(), rawLine.length()));
+            /* A resume landed: the rest of this client's input, and every other
+               client's, belongs to the running game again. */
+            if (!m_paused) return true;
+        }
+    }
+
+    return anyConnected;
+}
+
+/* Answered here only if it cannot touch the engine. Everything else keeps its
+   place in the queue and runs on the resume - it is late, not refused. */
+void QSPDevServer::HandlePausedLine(wxSocketBase *socket, const wxString &line)
+{
+    QSPJsonReader request;
+    if (request.Parse(line) && IsPauseSafeMethod(request.GetString(wxT("method"))))
+    {
+        Dispatch(socket, line);
+        FlushOutbox(socket);
+        return;
+    }
+
+    PendingCommand queued;
+    queued.socket = socket;
+    queued.line = line;
+    m_pending.push_back(queued);
+}
+
+/* What is safe to answer with game code on the stack, mid-statement.
+
+   The bar is not "read-only" but "does not call back into the interpreter".
+   getVar is in because it only does QSPGetVarValuesCount / QSPGetStrVarValue /
+   QSPGetNumVarValue - the same calls CollectWatchChanges already makes from
+   this very callback while tracing. state, vars, locations and locationCode
+   are out despite being reads: they evaluate $CURLOC through
+   QSPCalculateStrExpression, which runs engine code, and they read the action
+   and description buffers while the engine is half way through rebuilding
+   them. exec, eval, goto, reload, restore and restart are out for the obvious
+   reason. */
+bool QSPDevServer::IsPauseSafeMethod(const wxString &method)
+{
+    return method == wxT("resume") || method == wxT("pause") || method == wxT("break") ||
+           method == wxT("ping") || method == wxT("hello") || method == wxT("getVar");
+}
+
+bool QSPDevServer::CmdBreak(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText)
+{
+    wxString action(params.GetString(wxT("action"), wxT("list")));
+
+    if (action == wxT("set") || action == wxT("clear"))
+    {
+        wxString loc(params.GetString(wxT("loc")));
+        if (loc.IsEmpty())
+        {
+            errorText = wxT("\"loc\" is required to set or clear a breakpoint");
+            return false;
+        }
+        /* No line, or line 0, means the whole location - which is what an
+           editor wants when it is told "stop when the player gets here". */
+        wxString key(MakeBreakKey(loc, params.GetInt(wxT("line"), 0)));
+        if (action == wxT("set"))
+            m_breakpoints.insert(key);
+        else
+            m_breakpoints.erase(key);
+    }
+    else if (action == wxT("clearAll"))
+    {
+        m_breakpoints.clear();
+    }
+    else if (action != wxT("list"))
+    {
+        errorText = wxT("\"action\" must be set, clear, clearAll or list");
+        return false;
+    }
+
+    UpdateDebugHook();
+
+    result.StartObject();
+    result.Key(wxT("breakpoints"));
+    result.StartArray();
+    for (std::set<wxString>::const_iterator it = m_breakpoints.begin(); it != m_breakpoints.end(); ++it)
+    {
+        result.StartObject();
+        result.Member(wxT("loc"), it->BeforeLast(wxT(':')));
+        long lineNum = 0;
+        it->AfterLast(wxT(':')).ToLong(&lineNum);
+        result.MemberInt(wxT("line"), lineNum);
+        result.EndObject();
+    }
+    result.EndArray();
+    result.EndObject();
+    return true;
+}
+
+bool QSPDevServer::CmdPause(const QSPJsonReader &WXUNUSED(params), QSPJsonBuilder &result,
+                            wxString &WXUNUSED(errorText))
+{
+    /* There may be no game code running right now - a player sitting on a
+       location is not executing anything - so this is a request honoured at
+       the next line rather than an immediate stop. */
+    m_breakRequested = true;
+    UpdateDebugHook();
+
+    result.StartObject();
+    result.MemberBool(wxT("pending"), !m_paused);
+    result.MemberBool(wxT("paused"), m_paused);
+    result.EndObject();
+    return true;
+}
+
+bool QSPDevServer::CmdResume(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText)
+{
+    wxString mode(params.GetString(wxT("mode"), wxT("run")));
+
+    if (mode == wxT("run")) m_stepMode = Step_None;
+    else if (mode == wxT("step")) m_stepMode = Step_Line;
+    else if (mode == wxT("stepLoc")) m_stepMode = Step_Location;
+    else
+    {
+        errorText = wxT("\"mode\" must be run, step or stepLoc");
+        return false;
+    }
+    /* Read before the loop lets go, while the executing location is still the
+       one the game stopped in */
+    m_stepFromLoc = GetExecutingLocation();
+    m_breakRequested = false;
+    UpdateDebugHook();
+
+    bool wasPaused = m_paused;
+    m_paused = false;
+
+    result.StartObject();
+    result.MemberBool(wxT("ok"), true);
+    result.MemberBool(wxT("wasPaused"), wasPaused);
+    result.Member(wxT("mode"), mode);
+    result.EndObject();
+    return true;
 }
 
 /* ------------------------------------------------------------------ */

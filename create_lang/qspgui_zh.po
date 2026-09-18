@@ -349,3 +349,30 @@ msgstr "该游戏不允许存档"
 
 msgid "Couldn't write the quick save"
 msgstr "无法写入快速存档"
+
+msgid "Follow s&ystem light / dark theme"
+msgstr "跟随系统浅色 / 深色主题(&Y)"
+
+msgid "Save to slo&t"
+msgstr "保存到存档位(&T)"
+
+msgid "Load from slo&t"
+msgstr "从存档位读取(&T)"
+
+msgid "&%d: empty"
+msgstr "&%d: 空"
+
+msgid "saved"
+msgstr "已存档"
+
+msgid "Saved to slot %d"
+msgstr "已保存到存档位 %d"
+
+msgid "Couldn't write slot %d"
+msgstr "无法写入存档位 %d"
+
+msgid "Slot %d is empty"
+msgstr "存档位 %d 为空"
+
+msgid "Loaded slot %d"
+msgstr "已读取存档位 %d"

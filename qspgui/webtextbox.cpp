@@ -19,149 +19,25 @@
 #include "comtools.h"
 #include <wx/html/htmlwin.h>
 #include <wx/filename.h>
-#include <wx/filesys.h>
-#include <wx/ffile.h>
 #include <wx/arrstr.h>
-#include <string>
 
-#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
-    #include <WebView2.h>
-#endif
-
-/* Virtual hosts used by the Edge backend. Mapping a host to a folder keeps
-   relative paths contained inside that folder (the URL parser collapses "..",
-   so a game cannot walk out of its own directory) and gives media a real
-   https origin, which file:// does not - seeking in <video> needs it. */
-#define QSP_SHELL_HOST wxT("qsp.shell")
-#define QSP_GAME_HOST  wxT("qsp.game")
-#define QSP_SHELL_DIR  wxT("qspgui_web")
+/* One shell document per kind of pane, all served from the directory behind
+   the shell host that QSPWebPane sets up. */
 #define QSP_SHELL_FILE wxT("qspgui_shell.html")
 
-wxIMPLEMENT_CLASS(QSPWebTextBox, wxPanel);
+wxIMPLEMENT_CLASS(QSPWebTextBox, QSPWebPane);
 wxDEFINE_EVENT(wxEVT_QSP_SCRIPT_CALL, QSPScriptCallEvent);
 
-BEGIN_EVENT_TABLE(QSPWebTextBox, wxPanel)
-    EVT_SIZE(QSPWebTextBox::OnSize)
-END_EVENT_TABLE()
-
-namespace
-{
-    /* Encode an arbitrary string as a JS string literal, including the quotes.
-       Everything outside a conservative safe set is escaped as \uXXXX so we
-       never have to reason about the script's own encoding. */
-    wxString ToJsString(const wxString& str)
-    {
-        wxString out;
-        out.Alloc(str.Length() + 16);
-        out << wxT('"');
-        for (wxString::const_iterator i = str.begin(); i != str.end(); ++i)
-        {
-            wxUniChar ch = *i;
-            switch (ch.GetValue())
-            {
-            case wxT('"'):  out << wxT("\\\""); break;
-            case wxT('\\'): out << wxT("\\\\"); break;
-            case wxT('\n'): out << wxT("\\n"); break;
-            case wxT('\r'): out << wxT("\\r"); break;
-            case wxT('\t'): out << wxT("\\t"); break;
-            default:
-                if (ch.GetValue() < 0x20 || ch.GetValue() == 0x2028 || ch.GetValue() == 0x2029)
-                    out << wxString::Format(wxT("\\u%04X"), (unsigned int)ch.GetValue());
-                else
-                    out << ch;
-                break;
-            }
-        }
-        out << wxT('"');
-        return out;
-    }
-
-    /* A JS array literal of strings, for the script/stylesheet lists. */
-    wxString ToJsArray(const wxArrayString& items)
-    {
-        wxString out(wxT("["));
-        for (size_t i = 0; i < items.GetCount(); ++i)
-        {
-            if (i) out << wxT(',');
-            out << ToJsString(items[i]);
-        }
-        out << wxT(']');
-        return out;
-    }
-
-    int HexDigit(wxUniChar ch)
-    {
-        if (ch >= wxT('0') && ch <= wxT('9')) return (int)(ch.GetValue() - wxT('0'));
-        if (ch >= wxT('a') && ch <= wxT('f')) return (int)(ch.GetValue() - wxT('a')) + 10;
-        if (ch >= wxT('A') && ch <= wxT('F')) return (int)(ch.GetValue() - wxT('A')) + 10;
-        return -1;
-    }
-
-    /* Undo encodeURIComponent(). It only ever emits ASCII, with every byte of
-       the UTF-8 form of anything else written out as %XX, so the decoded bytes
-       can be handed straight back to FromUTF8. */
-    wxString FromUriComponent(const wxString& str)
-    {
-        std::string bytes;
-        bytes.reserve(str.Length());
-        for (size_t i = 0; i < str.Length(); ++i)
-        {
-            wxUniChar ch = str[i];
-            if (ch == wxT('%') && i + 2 < str.Length())
-            {
-                int high = HexDigit(str[i + 1]), low = HexDigit(str[i + 2]);
-                if (high >= 0 && low >= 0)
-                {
-                    bytes += (char)(unsigned char)((high << 4) | low);
-                    i += 2;
-                    continue;
-                }
-            }
-            if (ch.GetValue() < 0x80)
-                bytes += (char)ch.GetValue();
-            else
-                bytes += wxString(ch).ToUTF8().data();
-        }
-        return wxString::FromUTF8(bytes.c_str(), bytes.length());
-    }
-
-    wxString ToCssColor(const wxColour& color)
-    {
-        return wxT("#") + QSPTools::GetHexColor(color);
-    }
-
-    /* The shell is fetched through the browser's cache, so a build that
-       changes it would otherwise keep being served the previous version -
-       leaving the pane with a document that has no qspUpdate in it. Tagging
-       the URL with a hash of the contents busts that, and only when the shell
-       actually changed. */
-    wxString HashOf(const wxString& str)
-    {
-        wxUint32 hash = 2166136261u;
-        for (wxString::const_iterator i = str.begin(); i != str.end(); ++i)
-        {
-            hash ^= (wxUint32)(*i).GetValue();
-            hash *= 16777619u;
-        }
-        return wxString::Format(wxT("%08x"), hash);
-    }
-
-    /* Turn a local directory into a URL usable as a document base. */
-    wxString ToFileUrl(const wxString& dirPath)
-    {
-        if (dirPath.IsEmpty()) return wxEmptyString;
-        wxFileName dir(dirPath, wxPATH_NATIVE);
-        dir.MakeAbsolute();
-        return wxFileSystem::FileNameToURL(dir);
-    }
-}
+/* The conversions all panes share now live on QSPWebUtil; these keep the call
+   sites below reading the way they did. */
+static inline wxString ToJsString(const wxString& str) { return QSPWebUtil::ToJsString(str); }
+static inline wxString ToJsArray(const wxArrayString& items) { return QSPWebUtil::ToJsArray(items); }
+static inline wxString FromUriComponent(const wxString& str) { return QSPWebUtil::FromUriComponent(str); }
+static inline wxString ToCssColor(const wxColour& color) { return QSPWebUtil::ToCssColor(color); }
 
 QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
-    wxPanel(parent, id, wxDefaultPosition, wxDefaultSize, wxNO_BORDER)
+    QSPWebPane(parent, id)
 {
-    m_pathProvider = NULL;
-    m_isShellRequested = false;
-    m_isShellReady = false;
     m_isUpdatePending = false;
     m_updateDepth = 0;
     m_toUseHtml = false;
@@ -171,110 +47,23 @@ QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
     m_backColor = wxPanel::GetBackgroundColour();
     m_fontColor = wxPanel::GetForegroundColour();
 
-    WriteShellFile();
-
-    m_view = wxWebView::New();
-    /* Keep the browser's own pre-paint colour in sync with the app so neither
-       the first frame nor a resize flashes white. Must precede Create(). */
-    m_view->SetBackgroundColour(m_backColor);
-
-    /* Created on a blank page, not the shell: the script message handler has
-       to be registered before the document that uses it starts loading. */
-    m_view->Create(this, wxID_ANY, wxT("about:blank"), wxDefaultPosition, wxDefaultSize);
-    m_view->EnableContextMenu(false);
-    m_view->EnableAccessToDevTools(false);
-    m_view->AddScriptMessageHandler(wxT("qspHost"));
-
-    wxBoxSizer *sizer = new wxBoxSizer(wxVERTICAL);
-    sizer->Add(m_view, 1, wxEXPAND);
-    SetSizer(sizer);
-
-    m_view->Bind(wxEVT_WEBVIEW_LOADED, &QSPWebTextBox::OnWebViewLoaded, this);
-    m_view->Bind(wxEVT_WEBVIEW_NAVIGATING, &QSPWebTextBox::OnWebViewNavigating, this);
-    m_view->Bind(wxEVT_WEBVIEW_ERROR, &QSPWebTextBox::OnWebViewError, this);
-    m_view->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &QSPWebTextBox::OnScriptMessage, this);
-
-    /* The shell is not loaded yet: its virtual host can only be registered
-       once the backend exists, which is signalled by about:blank finishing. */
-    m_view->LoadURL(wxT("about:blank"));
+    /* The base has already created the view and started about:blank; this is
+       what it will load once the backend is up. */
+    InitShell(QSP_SHELL_FILE, BuildShellDocument());
 }
 
-#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
-/* The browser's own shortcuts mean nothing in a game: F5 and Ctrl-R would
-   reload the shell out from under it, and the player's keys are forwarded to
-   the frame, where F5 is quick save. */
-static void DisableBrowserAccelerators(wxWebView *view)
-{
-    ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(view->GetNativeBackend());
-    if (!webView2) return;
 
-    ICoreWebView2Settings *settings = NULL;
-    if (FAILED(webView2->get_Settings(&settings)) || !settings) return;
 
-    ICoreWebView2Settings3 *settings3 = NULL;
-    if (SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3))))
-    {
-        settings3->put_AreBrowserAcceleratorKeysEnabled(FALSE);
-        settings3->Release();
-    }
-    settings->Release();
-}
-#endif
 
-/* Serve the shell over a virtual host as well, so the document and the game
-   assets share an https-style origin. A file:// document is not allowed to
-   pull resources from a virtual host, which silently breaks every image. */
-bool QSPWebTextBox::SetupShellHost()
-{
-#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
-    DisableBrowserAccelerators(m_view);
-    ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(m_view->GetNativeBackend());
-    ICoreWebView2_3 *webView2_3 = NULL;
-    if (webView2 && SUCCEEDED(webView2->QueryInterface(IID_PPV_ARGS(&webView2_3))))
-    {
-        HRESULT hr = webView2_3->SetVirtualHostNameToFolderMapping(
-            QSP_SHELL_HOST, GetShellDir().wc_str(),
-            COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
-        webView2_3->Release();
-        if (SUCCEEDED(hr))
-        {
-            m_shellUrl = wxT("https://") QSP_SHELL_HOST wxT("/") QSP_SHELL_FILE
-                         wxT("?v=") + m_shellVersion;
-            return true;
-        }
-    }
-#endif
-    /* Without the Edge SDK we stay on file://, which works for the document
-       itself; only the virtual-host containment is lost. */
-    m_shellUrl = wxFileSystem::FileNameToURL(wxFileName(GetShellPath()));
-    return false;
-}
 
-void QSPWebTextBox::LoadShell()
-{
-    if (m_isShellRequested) return;
-    m_isShellRequested = true;
-    SetupShellHost();
-    m_view->LoadURL(m_shellUrl);
-}
 
-/* Its own directory, so the virtual host exposes only the shell and not the
-   whole user config folder. */
-wxString QSPWebTextBox::GetShellDir() const
-{
-    return wxFileName(QSPTools::GetConfigPath(QSP_SHELL_DIR, QSP_SHELL_FILE)).GetPath();
-}
 
-wxString QSPWebTextBox::GetShellPath() const
-{
-    return QSPTools::GetConfigPath(QSP_SHELL_DIR, QSP_SHELL_FILE);
-}
-
-/* The shell is written once per run rather than shipped as a data file so the
-   renderer stays self-contained and can't get out of sync with the binary.
+/* The document this pane runs. Handed to the base, which writes it out and
+   serves it: written once per run rather than shipped as a data file, so the
+   renderer stays self-contained and cannot get out of sync with the binary.
    It is split into several literals only because MSVC caps the length of a
    single one. */
-void QSPWebTextBox::WriteShellFile()
+wxString QSPWebTextBox::BuildShellDocument()
 {
     static const wxChar *shellDocument =
         wxT("<!DOCTYPE html>\n")
@@ -342,8 +131,13 @@ void QSPWebTextBox::WriteShellFile()
         wxT("    old.parentNode.replaceChild(el,old);\n")
         wxT("  }\n")
         wxT("}\n")
+        /* One hook throwing must not stop the others, but it must not vanish
+           either - qspReport is hoisted from the diagnostics block below. */
         wxT("function notifyRefresh(){\n")
-        wxT("  for(var i=0;i<refreshHooks.length;i++){try{refreshHooks[i]();}catch(err){}}\n")
+        wxT("  for(var i=0;i<refreshHooks.length;i++){\n")
+        wxT("    try{refreshHooks[i]();}\n")
+        wxT("    catch(err){qspReport('e',(err&&err.stack)?err.stack:String(err),'onRefresh');}\n")
+        wxT("  }\n")
         wxT("}\n")
         /* Nothing reaches the screen until it is finished. The new markup goes
            into the hidden layer, we wait for its media to become usable, and
@@ -517,120 +311,15 @@ void QSPWebTextBox::WriteShellFile()
         wxT("  var raw=a.getAttribute('href');\n")
         wxT("  if(raw!==null)qspPost('L'+raw);\n")
         wxT("},true);\n")
-        /* Keys pressed inside the browser never reach wxWidgets, so the action
-           hotkeys (1-9, space) and fullscreen escape would be dead here unless
-           we hand them back to the frame ourselves. */
-        /* Without the Edge SDK the browser still owns F5, so the page swallows
-           it here - the frame gets it back below as a quick save. */
-        wxT("document.addEventListener('keydown',function(e){\n")
-        wxT("  if(e.keyCode===116)e.preventDefault();\n")
-        wxT("},false);\n")
-        wxT("document.addEventListener('keyup',function(e){\n")
-        wxT("  var code=e.keyCode;\n")
-        wxT("  if(code>=96&&code<=105)code-=48;\n") // numpad digits -> plain digits
-        wxT("  var mods=(e.ctrlKey?1:0)|(e.shiftKey?2:0)|(e.altKey?4:0);\n")
-        wxT("  qspPost('K'+code+'|'+mods);\n")
-        wxT("},false);\n")
-        wxT("document.addEventListener('contextmenu',function(e){e.preventDefault();},false);\n")
-        wxT("qspPost('R');\n")
-        wxT("})();\n")
-        wxT("</script></body></html>\n");
+        wxT("");
 
     wxString shell;
     shell << shellDocument << shellCore << shellAssets << shellBridge;
-    m_shellVersion = HashOf(shell);
-
-    wxString path(GetShellPath());
-    wxFileName::Mkdir(wxFileName(path).GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
-
-    wxFFile file(path, wxT("wb"));
-    if (file.IsOpened())
-        file.Write(shell, wxConvUTF8);
-}
-
-void QSPWebTextBox::SetPathProvider(PathProvider *provider)
-{
-    m_pathProvider = provider;
-    SetupGameFolderAccess();
-}
-
-void QSPWebTextBox::SetPaneName(const wxString& name)
-{
-    if (m_paneName == name) return;
-    m_paneName = name;
-    RunScript(wxString::Format(wxT("qspSetPane(%s);"), ToJsString(m_paneName).wx_str()));
-}
-
-/* Point the document at the current game folder. On Edge this goes through a
-   virtual host so the mapping itself enforces containment; elsewhere we fall
-   back to a file:// base, which does not. */
-void QSPWebTextBox::SetupGameFolderAccess()
-{
-    if (!m_pathProvider) return;
-
-    wxString gameDir(m_pathProvider->GetGamePath());
-    if (gameDir == m_gameDir) return; // already set up for this folder
-
-#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
-    /* The game folder usually becomes known while the backend is still coming
-       up. Leave m_gameDir untouched in that case so this runs again once the
-       shell has loaded, instead of silently settling for the file:// fallback. */
-    ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(m_view->GetNativeBackend());
-    if (!webView2) return;
-
-    ICoreWebView2_3 *webView2_3 = NULL;
-    if (SUCCEEDED(webView2->QueryInterface(IID_PPV_ARGS(&webView2_3))))
-    {
-        bool isMapped = false;
-        if (!gameDir.IsEmpty())
-        {
-            /* GetGamePath() keeps a trailing separator, which the mapping
-               does not accept. */
-            wxString folder(gameDir);
-            while (folder.Length() > 1 && wxFileName::IsPathSeparator(folder.Last()))
-                folder.RemoveLast();
-
-            isMapped = SUCCEEDED(webView2_3->SetVirtualHostNameToFolderMapping(
-                QSP_GAME_HOST, folder.wc_str(),
-                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW));
-        }
-        else
-        {
-            webView2_3->ClearVirtualHostNameToFolderMapping(QSP_GAME_HOST);
-        }
-        webView2_3->Release();
-
-        if (isMapped)
-        {
-            m_gameDir = gameDir;
-            m_baseUrl = wxT("https://") QSP_GAME_HOST wxT("/");
-            /* A mapping only applies to documents loaded after it is
-               registered; an existing document keeps trying to resolve the
-               name over DNS and its requests just hang. This is the only
-               navigation after startup, and it happens once per game load -
-               never per location. */
-            if (m_isShellRequested)
-            {
-                m_isShellReady = false;
-                m_view->LoadURL(m_shellUrl);
-            }
-            return;
-        }
-    }
-#endif
-
-    m_gameDir = gameDir;
-    m_baseUrl = ToFileUrl(gameDir);
-    if (m_isShellReady)
-        RunScript(wxString::Format(wxT("qspSetBase(%s);"), ToJsString(m_baseUrl).wx_str()));
-}
-
-void QSPWebTextBox::RunScript(const wxString& script)
-{
-    /* Always async: QSP callbacks run inside engine script execution, and the
-       synchronous variant pumps a nested message loop, which re-enters it. */
-    if (m_isShellReady && m_view)
-        m_view->RunScriptAsync(script);
+    /* Key forwarding, the context-menu policy and the diagnostics hook are the
+       same in every pane, so they come from the base - which also closes the
+       document's IIFE and announces that the shell is live. */
+    shell << QSPWebPane::GetInputScript() << QSPWebPane::GetDiagnosticsScript();
+    return shell;
 }
 
 wxString QSPWebTextBox::BuildStyleObject() const
@@ -834,37 +523,12 @@ bool QSPWebTextBox::SetForegroundColour(const wxColour& colour)
     return result;
 }
 
-void QSPWebTextBox::OnSize(wxSizeEvent& event)
+
+/* The document is new, so its own idea of what is already applied is empty:
+   hand it everything before the first content update, so the game's styles are
+   in place by the time anything is painted. */
+void QSPWebTextBox::OnShellReady()
 {
-    if (GetSizer()) Layout();
-    event.Skip();
-}
-
-void QSPWebTextBox::OnWebViewLoaded(wxWebViewEvent& event)
-{
-    if (!m_isShellRequested)
-    {
-        /* about:blank is up, so the backend exists and can take the mapping. */
-        LoadShell();
-        return;
-    }
-    if (event.GetURL() != m_shellUrl) return;
-
-    m_isShellReady = true;
-    /* Retry the mapping in case the backend was not up when the game folder
-       first became known. It is a no-op once the folder is already set up, so
-       this cannot loop on the reload it may trigger. */
-    SetupGameFolderAccess();
-    if (!m_isShellReady) return; // a reload was started; this document is going away
-
-    if (!m_baseUrl.IsEmpty())
-        RunScript(wxString::Format(wxT("qspSetBase(%s);"), ToJsString(m_baseUrl).wx_str()));
-    if (!m_paneName.IsEmpty())
-        RunScript(wxString::Format(wxT("qspSetPane(%s);"), ToJsString(m_paneName).wx_str()));
-
-    /* The document is new, so its own idea of what is already applied is
-       empty; hand it everything before the first content update so the game's
-       styles are in place by the time anything is painted. */
     RunScript(BuildUserStylesScript());
     RunScript(BuildUserScriptsScript());
 
@@ -872,52 +536,11 @@ void QSPWebTextBox::OnWebViewLoaded(wxWebViewEvent& event)
     Flush();
 }
 
-/* Only the shell may ever load here. A navigation blanks the view before the
-   replacement paints, and that blank frame is exactly the flash this renderer
-   exists to avoid, so links go through the script message channel instead. */
-void QSPWebTextBox::OnWebViewNavigating(wxWebViewEvent& event)
+/* Everything the base does not claim for itself. Links are re-emitted as the
+   same wxHtmlLinkEvent the classic renderer produces, so
+   QSPFrame::OnLinkClicked keeps working verbatim. */
+void QSPWebTextBox::OnPaneMessage(const wxString& message)
 {
-    if (event.GetURL() != m_shellUrl && event.GetURL() != wxT("about:blank"))
-        event.Veto();
-}
-
-void QSPWebTextBox::OnWebViewError(wxWebViewEvent& WXUNUSED(event))
-{
-    /* Swallowed on purpose: a missing game asset must not interrupt play. */
-}
-
-/* Re-emit the click as the same wxHtmlLinkEvent the classic renderer produces,
-   so QSPFrame::OnLinkClicked keeps working verbatim. */
-void QSPWebTextBox::OnScriptMessage(wxWebViewEvent& event)
-{
-    wxString message(event.GetString());
-    if (message.IsEmpty()) return;
-
-    if (message[0] == wxT('R'))
-    {
-        m_isShellReady = true;
-        return;
-    }
-    if (message[0] == wxT('K'))
-    {
-        long code = 0, mods = 0;
-        wxString payload(message.Mid(1));
-        if (!payload.BeforeFirst(wxT('|')).ToLong(&code)) return;
-        payload.AfterFirst(wxT('|')).ToLong(&mods);
-        /* Browser key codes are wx key codes only by accident: the digits and
-           escape line up, the function keys don't. */
-        if (code >= 112 && code <= 123) code = WXK_F1 + (code - 112);
-
-        wxKeyEvent keyEvent(wxEVT_KEY_UP);
-        keyEvent.m_keyCode = code;
-        keyEvent.SetControlDown((mods & 1) != 0);
-        keyEvent.SetShiftDown((mods & 2) != 0);
-        keyEvent.SetAltDown((mods & 4) != 0);
-        keyEvent.SetEventObject(this);
-        keyEvent.SetId(GetId());
-        GetParent()->GetEventHandler()->ProcessEvent(keyEvent);
-        return;
-    }
     if (message[0] == wxT('C'))
     {
         /* "C<id>|<op>|<arg>|<arg>...", every argument percent-encoded so no
@@ -936,8 +559,15 @@ void QSPWebTextBox::OnScriptMessage(wxWebViewEvent& event)
         callEvent->SetArgs(args);
         callEvent->SetEventObject(this);
         /* Queued, not sent: running engine code from inside the browser's own
-           message callback would re-enter the view while it is mid-dispatch. */
-        GetParent()->GetEventHandler()->QueueEvent(callEvent);
+           message callback would re-enter the view while it is mid-dispatch.
+
+           Queued on the pane itself and left to propagate: a command event
+           climbs the parent chain until something handles it, so a pane
+           sitting inside a message dialog reaches the frame just the same.
+           Handing it straight to the parent would strand every call such a
+           pane makes, and a call nobody answers is a promise the game waits
+           on for good. */
+        QueueEvent(callEvent);
         return;
     }
     if (message[0] != wxT('L')) return;

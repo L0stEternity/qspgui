@@ -349,3 +349,30 @@ msgstr "Ця гра не дозволяє зберігати"
 
 msgid "Couldn't write the quick save"
 msgstr "Не вдалося записати швидке збереження"
+
+msgid "Follow s&ystem light / dark theme"
+msgstr "Дотримуватися с&истемної світлої / темної теми"
+
+msgid "Save to slo&t"
+msgstr "Зберегти у сло&т"
+
+msgid "Load from slo&t"
+msgstr "Завантажити зі сло&ту"
+
+msgid "&%d: empty"
+msgstr "&%d: порожньо"
+
+msgid "saved"
+msgstr "збережено"
+
+msgid "Saved to slot %d"
+msgstr "Збережено у слот %d"
+
+msgid "Couldn't write slot %d"
+msgstr "Не вдалося записати слот %d"
+
+msgid "Slot %d is empty"
+msgstr "Слот %d порожній"
+
+msgid "Loaded slot %d"
+msgstr "Завантажено слот %d"

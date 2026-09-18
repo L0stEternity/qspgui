@@ -15,6 +15,8 @@
 * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 */
 
+#include <limits.h>
+
 #include "callbacks_gui.h"
 #include "devserver.h"
 #include "comtools.h"
@@ -180,9 +182,13 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     // -------------------------------
     /* Game-supplied CSS and JS, read here exactly like $BACKIMAGE above, so
        the variables are the whole interface and a game never has to know which
-       renderer it is running under. The two description panes are separate
-       documents: both get the styles, and both run the scripts - a script
-       tells them apart through qsp.pane. */
+       renderer it is running under.
+
+       Every pane is a separate document, and all of them get the stylesheets -
+       one sheet themes the whole player. Only the description panes run the
+       scripts: that is where window.qsp is, and running them in the lists and
+       the picture too would mean four more copies of whatever state they set
+       up. The two description panes tell themselves apart through qsp.pane. */
     {
         wxString userCss(qspGetStringBlob(QSP_STATIC_STR(QSP_FMT("USERCSS"))));
         wxString userJs(qspGetStringBlob(QSP_STATIC_STR(QSP_FMT("USERJS"))));
@@ -191,6 +197,9 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
         qspGetStringList(QSP_STATIC_STR(QSP_FMT("USERJSFILE")), jsFiles);
         m_frame->GetDesc()->SetUserStyles(userCss, cssFiles);
         m_frame->GetVars()->SetUserStyles(userCss, cssFiles);
+        m_frame->GetActions()->SetUserStyles(userCss, cssFiles);
+        m_frame->GetObjects()->SetUserStyles(userCss, cssFiles);
+        m_frame->GetImgView()->SetUserStyles(userCss, cssFiles);
         m_frame->GetDesc()->SetUserScripts(userJs, jsFiles);
         m_frame->GetVars()->SetUserScripts(userJs, jsFiles);
     }
@@ -408,23 +417,26 @@ int QSPCallbacks::OpenGame(QSPString file, QSP_BOOL isNewGame)
 {
     if (m_frame->ToQuit()) return 0;
     wxString fullPath(m_frame->ComposeGamePath(qspToWxString(file)));
-    if (wxFileExists(fullPath))
+    /* Existing is not the same as readable: another program may be holding the
+       file open while it writes it, and an empty file is not a world. */
+    std::vector<char> world;
+    if (!QSPFileIO::Read(fullPath, world) || world.empty()) return 0;
+
+    if (QSPLoadGameWorldFromData(&world[0], (int)world.size(), isNewGame) && isNewGame)
     {
-        wxFile fileToLoad(fullPath);
-        int fileSize = fileToLoad.Length();
-        void *fileData = (void *)malloc(fileSize);
-        if (fileToLoad.Read(fileData, fileSize) == fileSize)
-        {
-            if (QSPLoadGameWorldFromData(fileData, fileSize, isNewGame) && isNewGame)
-                m_frame->UpdateGamePath(fullPath);
-        }
-        free(fileData);
+        /* The whole path, not just the folder: the quick save slot and the
+           development API's reload both key off the world file, and OPENQST
+           is how a game moves between them. */
+        m_frame->UpdateGameFile(fullPath);
+        if (m_frame->GetDevServer()) m_frame->GetDevServer()->NotifyGameOpened(fullPath);
     }
     return 0;
 }
 
 int QSPCallbacks::OpenGameStatus(QSPString file)
 {
+    /* The file dialog below yields to the event loop with game code running */
+    QSPDev::EngineScope engineScope;
     if (m_frame->ToQuit()) return 0;
     wxString fullPath;
     if (file.Str)
@@ -441,20 +453,18 @@ int QSPCallbacks::OpenGameStatus(QSPString file)
             return 0;
         fullPath = dialog.GetPath();
     }
-    if (wxFileExists(fullPath))
-    {
-        wxFile fileToLoad(fullPath);
-        int fileSize = fileToLoad.Length();
-        void *fileData = (void *)malloc(fileSize);
-        if (fileToLoad.Read(fileData, fileSize) == fileSize)
-            QSPOpenSavedGameFromData(fileData, fileSize, QSP_FALSE);
-        free(fileData);
-    }
+    /* See OpenGame: the file may exist and still not be readable */
+    std::vector<char> state;
+    if (!QSPFileIO::Read(fullPath, state) || state.empty()) return 0;
+
+    QSPOpenSavedGameFromData(&state[0], (int)state.size(), QSP_FALSE);
     return 0;
 }
 
 int QSPCallbacks::SaveGameStatus(QSPString file)
 {
+    /* The file dialog below yields to the event loop with game code running */
+    QSPDev::EngineScope engineScope;
     if (m_frame->ToQuit()) return 0;
     wxString fullPath;
     if (file.Str)
@@ -471,25 +481,10 @@ int QSPCallbacks::SaveGameStatus(QSPString file)
             return 0;
         fullPath = dialog.GetPath();
     }
-    int fileSize = 64 * 1024;
-    void *fileData = (void *)malloc(fileSize);
-    if (!QSPSaveGameAsData(fileData, &fileSize, QSP_FALSE))
-    {
-        while (fileSize)
-        {
-            fileData = (void *)realloc(fileData, fileSize);
-            if (QSPSaveGameAsData(fileData, &fileSize, QSP_FALSE))
-                break;
-        }
-        if (!fileSize)
-        {
-            free(fileData);
-            return 0;
-        }
-    }
-    wxFile fileToSave(fullPath, wxFile::write);
-    fileToSave.Write(fileData, fileSize);
-    free(fileData);
+    std::vector<char> state;
+    if (!QSPGameState::Save(state, false)) return 0;
+
+    QSPFileIO::Write(fullPath, state);
     return 0;
 }
 

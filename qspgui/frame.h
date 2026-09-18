@@ -38,6 +38,7 @@
     #include "pathprovider.h"
     #include "updateappdialog.h"
     #include "toast.h"
+    #include "saveslots.h"
 
     class QSPDevServer;
 
@@ -48,9 +49,15 @@
        player is identical, so the choice is a single type. */
     #ifdef QSPGUI_USE_WEBVIEW
         #include "webtextbox.h"
+        #include "weblistbox.h"
+        #include "webimgcanvas.h"
         typedef QSPWebTextBox QSPMainTextBox;
+        typedef QSPWebListBox QSPMainListBox;
+        typedef QSPWebImgCanvas QSPMainImgCanvas;
     #else
         typedef QSPTextBox QSPMainTextBox;
+        typedef QSPListBox QSPMainListBox;
+        typedef QSPImgCanvas QSPMainImgCanvas;
     #endif
 
     #define QSP_VER wxT(QSPGUI_VER_STR)
@@ -67,6 +74,14 @@
         ID_QUICKSAVE,
         ID_QUICKSAVESLOT,
         ID_QUICKLOADSLOT,
+        /* Two contiguous runs of QSPSaveSlots::Count, so a menu id maps back
+           to a slot number by subtraction */
+        ID_SAVETOSLOT,
+        ID_LOADFROMSLOT,
+        ID_SAVESLOT1,
+        ID_SAVESLOT9 = ID_SAVESLOT1 + QSPSaveSlots::Count - 1,
+        ID_LOADSLOT1,
+        ID_LOADSLOT9 = ID_LOADSLOT1 + QSPSaveSlots::Count - 1,
         ID_VOLUME,
         ID_VOLUME0,
         ID_VOLUME20,
@@ -81,6 +96,7 @@
         ID_SELECTFONTCOLOR,
         ID_SELECTBACKCOLOR,
         ID_SELECTLINKCOLOR,
+        ID_USESYSTEMCOLORS,
         ID_CHECKUPDATESONSTARTUP,
         ID_CHECKUPDATES,
         ID_SELECTLANG,
@@ -148,9 +164,9 @@
         QSPMainTextBox *GetDesc() const { return m_desc; }
         QSPMainTextBox *GetVars() const { return m_vars; }
         QSPInputBox *GetInput() const { return m_input; }
-        QSPListBox *GetActions() const { return m_actions; }
-        QSPListBox *GetObjects() const { return m_objects; }
-        QSPImgCanvas *GetImgView() const { return m_imgView; }
+        QSPMainListBox *GetActions() const { return m_actions; }
+        QSPMainListBox *GetObjects() const { return m_objects; }
+        QSPMainImgCanvas *GetImgView() const { return m_imgView; }
         wxMenu *GetGameMenu() const { return m_gameMenu; }
         /* Saving is up to the game: NOSAVE switches it off, which the game
            menu already reflects, so the hotkeys ask the menu rather than
@@ -175,6 +191,12 @@
         bool ApplyFontName(const wxString& name);
         bool ApplyFontColor(const wxColour& color);
         bool ApplyBackColor(const wxColour& color);
+        /* The palette the current desktop appearance calls for */
+        static void GetAppearanceColors(wxColour &back, wxColour &font, wxColour &link);
+        /* Push that palette into the panes; no-op unless it is being followed */
+        void ApplySystemColors();
+        /* Keeps the flag and the menu check mark in step */
+        void SetUseSystemColors(bool toUse);
         bool ApplyLinkColor(const wxColour& color);
         void CallPaneFunc(wxWindowID id, QSP_BOOL toShow) const;
         void TogglePane(wxWindowID id);
@@ -188,6 +210,13 @@
         wxString GetQuickSavePath() const;
         void QuickSaveToSlot();
         void QuickLoadFromSlot();
+        /* Numbered slots, 1-based. Both report through a toast rather than a
+           dialog: saving is not an event worth interrupting play for. */
+        void SaveToNumberedSlot(int slot);
+        void LoadFromNumberedSlot(int slot);
+        void RefreshSlotLabels();
+        /* $CURLOC, for the slot listing. Empty when it can't be read. */
+        wxString GetCurrentLocationName() const;
 
         // Events
         void OnVersionRequestState(wxWebRequestEvent& event);
@@ -203,8 +232,13 @@
         void OnQuickSave(wxCommandEvent& event);
         void OnQuickSaveSlot(wxCommandEvent& event);
         void OnQuickLoadSlot(wxCommandEvent& event);
+        void OnSaveToSlot(wxCommandEvent& event);
+        void OnLoadFromSlot(wxCommandEvent& event);
+        void OnMenuOpen(wxMenuEvent& event);
         void OnSelectFont(wxCommandEvent& event);
         void OnUseFontSize(wxCommandEvent& event);
+        void OnUseSystemColors(wxCommandEvent& event);
+        void OnSysColourChanged(wxSysColourChangedEvent& event);
         void OnSelectFontColor(wxCommandEvent& event);
         void OnSelectBackColor(wxCommandEvent& event);
         void OnSelectLinkColor(wxCommandEvent& event);
@@ -225,6 +259,9 @@
         /* A call the game's JS made through window.qsp. It lives here rather
            than in the pane because this is where the engine is driven from. */
         void OnScriptCall(QSPScriptCallEvent& event);
+        /* The game's JS threw, warned, or asked for an asset that isn't
+           there. Logged, and pushed to a connected editor. */
+        void OnScriptDiag(QSPScriptDiagEvent& event);
     #endif
         void OnObjectChange(wxCommandEvent& event);
         void OnActionChange(wxCommandEvent& event);
@@ -250,9 +287,9 @@
         QSPMainTextBox *m_desc;
         QSPMainTextBox *m_vars;
         QSPInputBox *m_input;
-        QSPListBox *m_objects;
-        QSPListBox *m_actions;
-        QSPImgCanvas *m_imgView;
+        QSPMainListBox *m_objects;
+        QSPMainListBox *m_actions;
+        QSPMainImgCanvas *m_imgView;
         wxMenu *m_gameMenu;
         int m_menuItemId;
         wxMenu *m_menu;
@@ -260,6 +297,9 @@
         wxMenu *m_settingsMenu;
         wxAuiManager *m_manager;
         QSPToast *m_toast;
+        QSPSaveSlots m_saveSlots;
+        wxMenu *m_saveSlotsMenu;
+        wxMenu *m_loadSlotsMenu;
         bool m_isManagerUpdatePending;
         wxColour m_backColor;
         wxColour m_linkColor;
@@ -272,6 +312,10 @@
         bool m_keyPressedWhileDisabled;
         bool m_toShowHotkeys;
         bool m_toCheckUpdates;
+        /* Track the desktop's light/dark setting instead of the colours saved
+           in the config. Cleared the moment a colour is picked by hand: an
+           explicit choice is not something to quietly overwrite. */
+        bool m_toUseSystemColors;
         int m_volume;
         int m_menuIndex;
     };

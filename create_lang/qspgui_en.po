@@ -349,3 +349,30 @@ msgstr "This game doesn't allow saving"
 
 msgid "Couldn't write the quick save"
 msgstr "Couldn't write the quick save"
+
+msgid "Follow s&ystem light / dark theme"
+msgstr "Follow s&ystem light / dark theme"
+
+msgid "Save to slo&t"
+msgstr "Save to slo&t"
+
+msgid "Load from slo&t"
+msgstr "Load from slo&t"
+
+msgid "&%d: empty"
+msgstr "&%d: empty"
+
+msgid "saved"
+msgstr "saved"
+
+msgid "Saved to slot %d"
+msgstr "Saved to slot %d"
+
+msgid "Couldn't write slot %d"
+msgstr "Couldn't write slot %d"
+
+msgid "Slot %d is empty"
+msgstr "Slot %d is empty"
+
+msgid "Loaded slot %d"
+msgstr "Loaded slot %d"

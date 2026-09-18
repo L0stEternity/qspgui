@@ -21,6 +21,24 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DCMAKE_INSTALL_PREFIX=o
 cmake --build build --target install --config Release
 ```
 
+## Windows release build
+
+For a release-ready player in one step — versioned binary, translations compiled
+from `create_lang/*.po`, and `qsp.dll` and the soundfont alongside it in a single
+folder you can copy anywhere:
+
+```powershell
+.\build_release_msvc.ps1 -Version 5.9.6
+```
+
+The version defaults to `git describe`. Add `-Tests` to gate the package on the
+unit tests, `-Classic` for the classic wxHtmlWindow renderer instead of
+wxWebView, `-Arch x64` for a 64-bit build, and `-Clean` to start from scratch.
+Output lands in `dist/`.
+
+`build_release_windows.sh` remains the way to produce the official 32-bit release
+by cross-compiling in docker.
+
 ## Support us
 
 Please consider supporting our development on:

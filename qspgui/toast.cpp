@@ -107,7 +107,9 @@ void QSPToast::Reposition()
     wxPoint pos(parent->ClientToScreen(wxPoint(
         (parentSize.GetWidth() - size.GetWidth()) / 2,
         parentSize.GetHeight() - size.GetHeight() - FromDIP(36))));
-    Move(pos);
+    /* Called on every tick, and moving a layered window repaints it, so a
+       window that has not moved is left alone. */
+    if (pos != GetPosition()) Move(pos);
 }
 
 wxColour QSPToast::GetAccentColor() const

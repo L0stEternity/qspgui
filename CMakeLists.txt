@@ -18,7 +18,9 @@ set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
@@ -131,6 +133,7 @@ set(QSPGUI_SOURCES
 	qspgui/app.cpp
 	qspgui/callbacks_gui.cpp
 	qspgui/comtools.cpp
+	qspgui/devjson.cpp
 	qspgui/devserver.cpp
 	qspgui/frame.cpp
 	qspgui/imgcanvas.cpp
@@ -140,13 +143,18 @@ set(QSPGUI_SOURCES
 	qspgui/listbox.cpp
 	qspgui/msgdlg.cpp
 	qspgui/textbox.cpp
+	qspgui/saveslots.cpp
 	qspgui/toast.cpp
 	qspgui/transhelper.cpp
 	qspgui/updateappdialog.cpp
 	qspgui/sound/sound_engine.c
 )
 if (QSPGUI_USE_WEBVIEW)
-	list(APPEND QSPGUI_SOURCES qspgui/webtextbox.cpp)
+	list(APPEND QSPGUI_SOURCES
+		qspgui/webpane.cpp
+		qspgui/webtextbox.cpp
+		qspgui/weblistbox.cpp
+		qspgui/webimgcanvas.cpp)
 endif()
 if (WIN32)
 	list(APPEND QSPGUI_SOURCES qspgui/rsc/res.rc)
@@ -203,6 +211,126 @@ if (QSPGUI_USE_WEBVIEW)
 			message(WARNING "WebView2 SDK headers not found; falling back to file:// base URLs")
 		endif()
 	endif()
+endif()
+
+# Translations
+#
+# The .mo catalogues are compiled from create_lang/*.po as part of the build, so
+# a release cannot ship strings that are older than the ones in the tree - which
+# is what happens when the generated catalogues are committed and someone edits
+# a .po without remembering to re-run the converter by hand.
+#
+# gettext is not installed on a stock Windows box, so build_packages/msgfmt.py
+# stands in for it. A real msgfmt is preferred when there is one, since it also
+# validates the catalogue.
+
+find_program(QSPGUI_MSGFMT NAMES msgfmt)
+find_package(Python3 QUIET COMPONENTS Interpreter)
+
+if (QSPGUI_MSGFMT)
+	set(QSPGUI_MSGFMT_COMMAND "${QSPGUI_MSGFMT}")
+	message(STATUS "Compiling translations with ${QSPGUI_MSGFMT}")
+elseif (Python3_Interpreter_FOUND)
+	set(QSPGUI_MSGFMT_COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_packages/msgfmt.py")
+	message(STATUS "Compiling translations with ${Python3_EXECUTABLE} build_packages/msgfmt.py")
+else()
+	message(WARNING "Neither msgfmt nor Python found; shipping the prebuilt catalogues in misc/common/langs, which may be out of date")
+endif()
+
+# Where the catalogues live for both the build tree and the install tree.
+set(QSPGUI_LANGS_DIR "${CMAKE_BINARY_DIR}/langs")
+
+if (QSPGUI_MSGFMT_COMMAND)
+	# CONFIGURE_DEPENDS so that adding a language does not silently need a manual
+	# reconfigure before it appears in the build.
+	file(GLOB QSPGUI_PO_FILES CONFIGURE_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/create_lang/qspgui_*.po")
+	set(QSPGUI_MO_FILES "")
+	foreach (po IN LISTS QSPGUI_PO_FILES)
+		# create_lang/qspgui_ru.po -> langs/ru/qspgui_ru.mo, the layout
+		# QSPTranslationHelper looks for at runtime.
+		get_filename_component(po_name "${po}" NAME_WE)
+		string(REGEX REPLACE "^qspgui_" "" lang "${po_name}")
+		set(mo "${QSPGUI_LANGS_DIR}/${lang}/${po_name}.mo")
+		add_custom_command(OUTPUT "${mo}"
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${QSPGUI_LANGS_DIR}/${lang}"
+			COMMAND ${QSPGUI_MSGFMT_COMMAND} "${po}" -o "${mo}"
+			DEPENDS "${po}" "${CMAKE_CURRENT_SOURCE_DIR}/build_packages/msgfmt.py"
+			COMMENT "Compiling translation ${lang}"
+			VERBATIM)
+		list(APPEND QSPGUI_MO_FILES "${mo}")
+	endforeach()
+
+	add_custom_target(qspgui_translations ALL DEPENDS ${QSPGUI_MO_FILES})
+	add_dependencies(qspgui qspgui_translations)
+else()
+	# No converter available: fall back to whatever is committed.
+	add_custom_target(qspgui_translations ALL
+		COMMAND ${CMAKE_COMMAND} -E copy_directory
+			"${CMAKE_CURRENT_SOURCE_DIR}/misc/common/langs" "${QSPGUI_LANGS_DIR}"
+		COMMENT "Copying prebuilt translations"
+		VERBATIM)
+	add_dependencies(qspgui qspgui_translations)
+endif()
+
+# A runnable build tree
+#
+# qsp.dll already lands next to the exe, but the data files did not, so running
+# the freshly built player picked up neither translations nor the soundfont and
+# every run needed a separate install step to be usable. Stage them beside the
+# exe instead - this is the same content the install rules place in DATADIR.
+
+if (APPLE)
+	set(QSPGUI_RUNTIME_DATA_DIR "$<TARGET_BUNDLE_CONTENT_DIR:qspgui>/Resources")
+else()
+	set(QSPGUI_RUNTIME_DATA_DIR "$<TARGET_FILE_DIR:qspgui>")
+endif()
+
+add_custom_command(TARGET qspgui POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		"${QSPGUI_LANGS_DIR}" "${QSPGUI_RUNTIME_DATA_DIR}/langs"
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		"${CMAKE_CURRENT_SOURCE_DIR}/misc/common/sound" "${QSPGUI_RUNTIME_DATA_DIR}/sound"
+	COMMENT "Staging data files next to the player"
+	VERBATIM)
+
+# Tests
+#
+# The pieces with no GUI in them: the QSP code generator that turns outside
+# input into something the engine will run, the development API's hand-written
+# JSON, the containment checks that keep a game in its folder, whole-file I/O
+# and the save slots. Each is either a parser or a boundary check, which is
+# exactly the code that should not be verified by running the player and
+# looking at it.
+#
+# ctest --test-dir <build> --output-on-failure
+
+option(QSPGUI_BUILD_TESTS "Build the unit tests" OFF)
+
+if (QSPGUI_BUILD_TESTS)
+	enable_testing()
+
+	add_executable(qspgui_tests
+		tests/testing.cpp
+		tests/test_devjson.cpp
+		tests/test_fileio.cpp
+		tests/test_paths.cpp
+		tests/test_qspcode.cpp
+		tests/test_saveslots.cpp
+		qspgui/comtools.cpp
+		qspgui/devjson.cpp
+		qspgui/saveslots.cpp
+	)
+	target_compile_definitions(qspgui_tests PRIVATE _UNICODE)
+	if (WIN32)
+		target_compile_definitions(qspgui_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+	endif()
+	# wxcore for wxColour, which comtools uses; qsp because the same file
+	# serialises a session. No GUI is created - the runner is a console app
+	# that brings wxWidgets up through wxInitializer.
+	target_link_libraries(qspgui_tests PRIVATE qsp wxbase wxcore)
+
+	add_test(NAME qspgui_tests COMMAND qspgui_tests)
 endif()
 
 # Installation
@@ -277,7 +405,7 @@ elseif (UNIX)
 	install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/misc/common/icons/qsp.svg" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps" COMPONENT Main)
 endif()
 
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/misc/common/langs" DESTINATION "${DATADIR}" COMPONENT Main)
+install(DIRECTORY "${QSPGUI_LANGS_DIR}" DESTINATION "${DATADIR}" COMPONENT Main)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/misc/common/sound" DESTINATION "${DATADIR}" COMPONENT Main)
 
 # Packaging

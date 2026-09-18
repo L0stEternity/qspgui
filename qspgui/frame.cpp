@@ -15,6 +15,8 @@
 * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 */
 
+#include <limits.h>
+
 #include "frame.h"
 #include "comtools.h"
 #include "callbacks_gui.h"
@@ -42,11 +44,16 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MENU(ID_QUICKSAVE, QSPFrame::OnQuickSave)
     EVT_MENU(ID_QUICKSAVESLOT, QSPFrame::OnQuickSaveSlot)
     EVT_MENU(ID_QUICKLOADSLOT, QSPFrame::OnQuickLoadSlot)
+    EVT_MENU_RANGE(ID_SAVESLOT1, ID_SAVESLOT9, QSPFrame::OnSaveToSlot)
+    EVT_MENU_RANGE(ID_LOADSLOT1, ID_LOADSLOT9, QSPFrame::OnLoadFromSlot)
+    EVT_MENU_OPEN(QSPFrame::OnMenuOpen)
     EVT_MENU(ID_SELECTFONT, QSPFrame::OnSelectFont)
     EVT_MENU(ID_USEFONTSIZE, QSPFrame::OnUseFontSize)
     EVT_MENU(ID_SELECTFONTCOLOR, QSPFrame::OnSelectFontColor)
     EVT_MENU(ID_SELECTBACKCOLOR, QSPFrame::OnSelectBackColor)
     EVT_MENU(ID_SELECTLINKCOLOR, QSPFrame::OnSelectLinkColor)
+    EVT_MENU(ID_USESYSTEMCOLORS, QSPFrame::OnUseSystemColors)
+    EVT_SYS_COLOUR_CHANGED(QSPFrame::OnSysColourChanged)
     EVT_MENU(ID_CHECKUPDATESONSTARTUP, QSPFrame::OnCheckUpdatesOnStartup)
     EVT_MENU(ID_SELECTLANG, QSPFrame::OnSelectLang)
     EVT_MENU(ID_TOGGLEWINMODE, QSPFrame::OnToggleWinMode)
@@ -120,6 +127,19 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_gameMenu->Append(ID_QUICKSAVESLOT, wxT("-"));
     m_gameMenu->Append(ID_QUICKLOADSLOT, wxT("-"));
     // ------------
+    /* The slot labels are the slots' contents, so they are filled in when the
+       menu opens rather than here - at this point no game is even loaded. */
+    m_saveSlotsMenu = new wxMenu;
+    m_loadSlotsMenu = new wxMenu;
+    for (int slot = 1; slot <= QSPSaveSlots::Count; ++slot)
+    {
+        m_saveSlotsMenu->Append(ID_SAVESLOT1 + slot - 1, wxT("-"));
+        m_loadSlotsMenu->Append(ID_LOADSLOT1 + slot - 1, wxT("-"));
+    }
+    m_gameMenu->AppendSeparator();
+    m_gameMenu->Append(ID_SAVETOSLOT, wxT("-"), m_saveSlotsMenu);
+    m_gameMenu->Append(ID_LOADFROMSLOT, wxT("-"), m_loadSlotsMenu);
+    // ------------
     wxMenu *wndsMenu = new wxMenu;
     wndsMenu->Append(ID_TOGGLEOBJS, wxT("-"));
     wndsMenu->Append(ID_TOGGLEACTS, wxT("-"));
@@ -137,6 +157,8 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     colorsMenu->Append(ID_SELECTFONTCOLOR, wxT("-"));
     colorsMenu->Append(ID_SELECTBACKCOLOR, wxT("-"));
     colorsMenu->Append(ID_SELECTLINKCOLOR, wxT("-"));
+    colorsMenu->AppendSeparator();
+    colorsMenu->AppendCheckItem(ID_USESYSTEMCOLORS, wxT("-"));
     // ------------
     wxMenu *volumeMenu = new wxMenu;
     volumeMenu->AppendRadioItem(ID_VOLUME0, wxT("-"));
@@ -174,13 +196,13 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     // --------------------------------------
     m_manager = new wxAuiManager(this);
     m_manager->SetDockSizeConstraint(0.5, 0.5);
-    m_imgView = new QSPImgCanvas(this, ID_VIEWPIC);
+    m_imgView = new QSPMainImgCanvas(this, ID_VIEWPIC);
     m_manager->AddPane(m_imgView, wxAuiPaneInfo().Name(wxT("imgview")).MinSize(50, 50).BestSize(150, 150).Top().MaximizeButton().Hide());
     m_desc = new QSPMainTextBox(this, ID_MAINDESC);
     m_manager->AddPane(m_desc, wxAuiPaneInfo().Name(wxT("desc")).CenterPane());
-    m_objects = new QSPListBox(this, ID_OBJECTS);
+    m_objects = new QSPMainListBox(this, ID_OBJECTS);
     m_manager->AddPane(m_objects, wxAuiPaneInfo().Name(wxT("objs")).MinSize(50, 50).BestSize(100, 100).Right().MaximizeButton());
-    m_actions = new QSPListBox(this, ID_ACTIONS, LB_EXTENDED);
+    m_actions = new QSPMainListBox(this, ID_ACTIONS, LB_EXTENDED);
     m_manager->AddPane(m_actions, wxAuiPaneInfo().Name(wxT("acts")).MinSize(50, 50).BestSize(100, 100).Bottom().MaximizeButton());
     m_vars = new QSPMainTextBox(this, ID_VARSDESC);
     m_manager->AddPane(m_vars, wxAuiPaneInfo().Name(wxT("vars")).MinSize(50, 50).BestSize(100, 100).Bottom().MaximizeButton());
@@ -191,10 +213,15 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_objects->SetPathProvider(this);
     m_actions->SetPathProvider(this);
     m_vars->SetPathProvider(this);
+    /* The image pane needs one too now that it renders in the browser: it is
+       what registers the game folder's virtual host and gives the document a
+       base for the picture to resolve against. */
+    m_imgView->SetPathProvider(this);
     m_desc->SetPaneName(wxT("main"));
     m_vars->SetPaneName(wxT("vars"));
 #ifdef QSPGUI_USE_WEBVIEW
     Bind(wxEVT_QSP_SCRIPT_CALL, &QSPFrame::OnScriptCall, this);
+    Bind(wxEVT_QSP_SCRIPT_DIAG, &QSPFrame::OnScriptDiag, this);
 #endif
     // --------------------------------------
     m_toast = new QSPToast(this);
@@ -207,6 +234,7 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_keyPressedWhileDisabled = false;
     m_isGameOpened = false;
     m_isManagerUpdatePending = false;
+    m_toUseSystemColors = false;
 }
 
 QSPFrame::~QSPFrame()
@@ -226,9 +254,9 @@ void QSPFrame::SaveSettings()
     if (IsIconized()) Iconize(false);
     if ((isMaximized = IsMaximized())) Maximize(false);
     wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configPath);
-    cfg.Write(wxT("Colors/BackColor"), m_backColor.Blue() << 16 | m_backColor.Green() << 8 | m_backColor.Red());
-    cfg.Write(wxT("Colors/FontColor"), m_fontColor.Blue() << 16 | m_fontColor.Green() << 8 | m_fontColor.Red());
-    cfg.Write(wxT("Colors/LinkColor"), m_linkColor.Blue() << 16 | m_linkColor.Green() << 8 | m_linkColor.Red());
+    cfg.Write(wxT("Colors/BackColor"), (int)QSPTools::PackColor(m_backColor));
+    cfg.Write(wxT("Colors/FontColor"), (int)QSPTools::PackColor(m_fontColor));
+    cfg.Write(wxT("Colors/LinkColor"), (int)QSPTools::PackColor(m_linkColor));
     cfg.Write(wxT("Font/FontSize"), m_fontSize);
     cfg.Write(wxT("Font/FontName"), m_fontName);
     cfg.Write(wxT("Font/UseFontSize"), m_toUseFontSize);
@@ -236,6 +264,7 @@ void QSPFrame::SaveSettings()
     cfg.Write(wxT("General/ShowHotkeys"), m_toShowHotkeys);
     cfg.Write(wxT("General/Panels"), m_manager->SavePerspective());
     cfg.Write(wxT("General/CheckUpdates"), m_toCheckUpdates);
+    cfg.Write(wxT("Colors/UseSystemColors"), m_toUseSystemColors);
     m_transHelper->Save(cfg, wxT("General/Language"));
     GetPosition(&x, &y);
     GetClientSize(&w, &h);
@@ -251,13 +280,24 @@ void QSPFrame::LoadSettings()
     bool toMaximize;
     int x, y, w, h, temp;
     Hide();
+    /* Asked before the config is opened, because opening it can create it */
+    bool isFirstRun = !wxFileExists(m_configPath);
+
     wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configPath);
-    cfg.Read(wxT("Colors/BackColor"), &temp, 0xE0E0E0);
-    m_backColor = wxColour(temp);
-    cfg.Read(wxT("Colors/FontColor"), &temp, 0x000000);
-    m_fontColor = wxColour(temp);
-    cfg.Read(wxT("Colors/LinkColor"), &temp, 0xFF0000);
-    m_linkColor = wxColour(temp);
+    /* The stored form is QSP's own 0xBBGGRR, which is also what wxColour's
+       packed constructor reads - so the defaults have to be built from
+       components rather than written as literals. */
+    wxColour sysBack, sysFont, sysLink;
+    GetAppearanceColors(sysBack, sysFont, sysLink);
+    /* On by default, so a first run on a dark desktop looks like one. An
+       existing config predates the setting and keeps the colours it has. */
+    cfg.Read(wxT("Colors/UseSystemColors"), &m_toUseSystemColors, isFirstRun);
+    cfg.Read(wxT("Colors/BackColor"), &temp, (int)QSPTools::PackColor(sysBack));
+    m_backColor = (m_toUseSystemColors ? sysBack : wxColour(temp));
+    cfg.Read(wxT("Colors/FontColor"), &temp, (int)QSPTools::PackColor(sysFont));
+    m_fontColor = (m_toUseSystemColors ? sysFont : wxColour(temp));
+    cfg.Read(wxT("Colors/LinkColor"), &temp, (int)QSPTools::PackColor(sysLink));
+    m_linkColor = (m_toUseSystemColors ? sysLink : wxColour(temp));
     temp = wxNORMAL_FONT->GetPointSize();
     if (temp < 12) temp = 12;
     cfg.Read(wxT("Font/FontSize"), &m_fontSize, temp);
@@ -295,6 +335,7 @@ void QSPFrame::LoadSettings()
     RefreshUI();
     m_settingsMenu->Check(ID_USEFONTSIZE, m_toUseFontSize);
     m_settingsMenu->Check(ID_CHECKUPDATESONSTARTUP, m_toCheckUpdates);
+    m_settingsMenu->Check(ID_USESYSTEMCOLORS, m_toUseSystemColors);
     m_manager->LoadPerspective(panels);
     m_manager->RestoreMaximizedPane();
     // Check for correct position
@@ -330,6 +371,8 @@ void QSPFrame::EnableControls(bool status, bool isExtended)
     m_gameMenu->Enable(ID_QUICKSAVE, status);
     m_gameMenu->Enable(ID_QUICKSAVESLOT, status);
     m_gameMenu->Enable(ID_QUICKLOADSLOT, status);
+    m_gameMenu->Enable(ID_SAVETOSLOT, status);
+    m_gameMenu->Enable(ID_LOADFROMSLOT, status);
     m_settingsMenu->Enable(ID_TOGGLEOBJS, status);
     m_settingsMenu->Enable(ID_TOGGLEACTS, status);
     m_settingsMenu->Enable(ID_TOGGLEDESC, status);
@@ -512,6 +555,9 @@ void QSPFrame::UpdateGamePath(const wxString &fullPath)
 void QSPFrame::UpdateGameFile(const wxString &fullPath)
 {
     m_gameFilePath = fullPath;
+    /* Slots are per game and keyed off the world file, so OPENQST moving the
+       session to another world moves the slots with it. */
+    m_saveSlots.SetGameFile(fullPath);
     UpdateGamePath(fullPath);
 }
 
@@ -525,29 +571,12 @@ bool QSPFrame::StartDevServer(unsigned short port, const wxString &token)
 
 wxString QSPFrame::ComposeGamePath(const wxString &relativePath) const
 {
-    if (relativePath.IsEmpty())
-        return wxEmptyString;
-
-    wxFileName fullPath(m_worldPath + relativePath, wxPATH_DOS);
-    fullPath.MakeAbsolute();
-    wxString normalizedPath(fullPath.GetFullPath());
-    if (normalizedPath.StartsWith(m_worldPath))
-        return normalizedPath;
-
-    return wxEmptyString;
+    return QSPPaths::ComposeContained(m_worldPath, relativePath);
 }
 
 bool QSPFrame::IsValidFullPath(const wxString &path) const
 {
-    if (path.IsEmpty())
-        return true;
-
-    wxFileName fullPath(path);
-    fullPath.MakeAbsolute();
-    if (fullPath.GetFullPath().StartsWith(m_worldPath))
-        return true;
-
-    return false;
+    return QSPPaths::IsContained(m_worldPath, path);
 }
 
 void QSPFrame::ShowError()
@@ -627,6 +656,8 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_QUICKSAVE, _("&Quicksave\tCtrl-S"));
     menuBar->SetLabel(ID_QUICKSAVESLOT, _("Quick save &slot\tF5"));
     menuBar->SetLabel(ID_QUICKLOADSLOT, _("Load quick save s&lot\tF9"));
+    menuBar->SetLabel(ID_SAVETOSLOT, _("Save to slo&t"));
+    menuBar->SetLabel(ID_LOADFROMSLOT, _("Load from slo&t"));
     menuBar->SetLabel(ID_TOGGLEOBJS, _("&Objects\tCtrl-1"));
     menuBar->SetLabel(ID_TOGGLEACTS, _("&Actions\tCtrl-2"));
     menuBar->SetLabel(ID_TOGGLEDESC, _("A&dditional desc\tCtrl-3"));
@@ -641,6 +672,7 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_SELECTFONTCOLOR, _("Select font &color...\tAlt-C"));
     menuBar->SetLabel(ID_SELECTBACKCOLOR, _("Select &background color...\tAlt-B"));
     menuBar->SetLabel(ID_SELECTLINKCOLOR, _("Select l&inks color...\tAlt-I"));
+    menuBar->SetLabel(ID_USESYSTEMCOLORS, _("Follow s&ystem light / dark theme"));
     menuBar->SetLabel(ID_VOLUME, _("Sound &volume"));
     menuBar->SetLabel(ID_VOLUME0, _("No sound\tAlt-1"));
     menuBar->SetLabel(ID_VOLUME20, _("20%\tAlt-2"));
@@ -723,6 +755,57 @@ bool QSPFrame::ApplyBackColor(const wxColour& color)
     return true;
 }
 
+/* The historic defaults are a light grey page, black text and blue links, and
+   that is still exactly what a light desktop gets. A dark one gets the same
+   relationships rather than the same numbers: a page darker than the window
+   chrome around it, text a little short of white so it doesn't glare, and a
+   link light enough to stay legible against it.
+
+   A game that sets $BCOLOR / $FCOLOR / $LCOLOR still overrides all of this -
+   these are only the player's own defaults, which is what ApplyParams falls
+   back to. */
+void QSPFrame::GetAppearanceColors(wxColour &back, wxColour &font, wxColour &link)
+{
+    if (wxSystemSettings::GetAppearance().IsDark())
+    {
+        back = wxColour(0x1E, 0x1E, 0x1E);
+        font = wxColour(0xE0, 0xE0, 0xE0);
+        link = wxColour(0x6C, 0xB6, 0xFF);
+    }
+    else
+    {
+        back = wxColour(0xE0, 0xE0, 0xE0);
+        font = wxColour(0x00, 0x00, 0x00);
+        link = wxColour(0x00, 0x00, 0xFF);
+    }
+}
+
+void QSPFrame::SetUseSystemColors(bool toUse)
+{
+    m_toUseSystemColors = toUse;
+    if (m_settingsMenu) m_settingsMenu->Check(ID_USESYSTEMCOLORS, toUse);
+}
+
+void QSPFrame::ApplySystemColors()
+{
+    if (!m_toUseSystemColors) return;
+
+    wxColour back, font, link;
+    GetAppearanceColors(back, font, link);
+    if (back == m_backColor && font == m_fontColor && link == m_linkColor) return;
+
+    m_backColor = back;
+    m_fontColor = font;
+    m_linkColor = link;
+    ApplyBackColor(back);
+    ApplyFontColor(font);
+    ApplyLinkColor(link);
+    /* A game's own colours win, and ApplyParams is what re-asserts them - so
+       it runs after ours rather than being skipped when a game is open. */
+    if (m_isGameOpened) ApplyParams();
+    RefreshUI();
+}
+
 bool QSPFrame::ApplyLinkColor(const wxColour& color)
 {
     m_desc->SetLinkColor(color);
@@ -780,86 +863,65 @@ void QSPFrame::TogglePane(wxWindowID id)
 
 void QSPFrame::OpenGameFile(const wxString& fullPath)
 {
-    if (wxFileExists(fullPath))
+    /* Existing is not the same as readable: another program may be holding the
+       file open while it writes it, and an empty file is not a world. */
+    std::vector<char> world;
+    if (!QSPFileIO::Read(fullPath, world) || world.empty()) return;
+
+    if (!QSPLoadGameWorldFromData(&world[0], (int)world.size(), QSP_TRUE))
     {
-        wxFile fileToLoad(fullPath);
-        int fileSize = fileToLoad.Length();
-        void *fileData = (void *)malloc(fileSize);
-        if (fileToLoad.Read(fileData, fileSize) == fileSize)
-        {
-            if (QSPLoadGameWorldFromData(fileData, fileSize, QSP_TRUE))
-            {
-                UpdateGameFile(fullPath);
-                m_isGameOpened = true;
-
-                wxString configString(m_worldPath + QSP_CONFIG);
-                wxString newPath(wxFileExists(configString) ? configString : m_configDefPath);
-                if (newPath != m_configPath)
-                {
-                    SaveSettings();
-                    m_configPath = newPath;
-                    LoadSettings();
-                }
-
-                wxCommandEvent dummy;
-                OnNewGame(dummy);
-
-                if (m_toQuit) return;
-                UpdateTitle();
-                EnableControls(true);
-                m_savedGamePath.Clear();
-                if (m_devServer) m_devServer->NotifyGameOpened(fullPath);
-            }
-            else
-                ShowError();
-        }
-        free(fileData);
+        ShowError();
+        return;
     }
+
+    /* Everything below can pump the event loop - reloading settings rebuilds
+       the UI, and entering the start location runs game code - so m_toQuit can
+       become true part way through. The bytes are owned by the vector, which
+       is what lets those paths simply return. */
+    UpdateGameFile(fullPath);
+    m_isGameOpened = true;
+
+    wxString configString(m_worldPath + QSP_CONFIG);
+    wxString newPath(wxFileExists(configString) ? configString : m_configDefPath);
+    if (newPath != m_configPath)
+    {
+        SaveSettings();
+        m_configPath = newPath;
+        LoadSettings();
+    }
+
+    wxCommandEvent dummy;
+    OnNewGame(dummy);
+
+    if (m_toQuit) return;
+    UpdateTitle();
+    EnableControls(true);
+    m_savedGamePath.Clear();
+    if (m_devServer) m_devServer->NotifyGameOpened(fullPath);
 }
 
 bool QSPFrame::OpenGameState(const wxString& fullPath)
 {
-    bool isOpened = false;
-    if (wxFileExists(fullPath))
+    std::vector<char> state;
+    if (!QSPFileIO::Read(fullPath, state) || state.empty()) return false;
+
+    if (!QSPOpenSavedGameFromData(&state[0], (int)state.size(), QSP_TRUE))
     {
-        wxFile fileToLoad(fullPath);
-        int fileSize = fileToLoad.Length();
-        void *fileData = (void *)malloc(fileSize);
-        if (fileToLoad.Read(fileData, fileSize) == fileSize)
-        {
-            if (QSPOpenSavedGameFromData(fileData, fileSize, QSP_TRUE))
-                isOpened = true;
-            else
-                ShowError();
-        }
-        free(fileData);
+        ShowError();
+        return false;
     }
-    return isOpened;
+    return true;
 }
 
 bool QSPFrame::SaveGameState(const wxString &fullPath, bool toRemember)
 {
-    int fileSize = 64 * 1024;
-    void *fileData = (void *)malloc(fileSize);
-    if (!QSPSaveGameAsData(fileData, &fileSize, QSP_TRUE))
+    std::vector<char> state;
+    if (!QSPGameState::Save(state, true))
     {
-        while (fileSize)
-        {
-            fileData = (void *)realloc(fileData, fileSize);
-            if (QSPSaveGameAsData(fileData, &fileSize, QSP_TRUE))
-                break;
-        }
-        if (!fileSize)
-        {
-            free(fileData);
-            ShowError();
-            return false;
-        }
+        ShowError();
+        return false;
     }
-    wxFile fileToSave(fullPath, wxFile::write);
-    bool isSaved = fileToSave.IsOpened() && fileToSave.Write(fileData, fileSize) == (size_t)fileSize;
-    free(fileData);
-    if (!isSaved) return false;
+    if (!QSPFileIO::Write(fullPath, state)) return false;
 
     if (toRemember) m_savedGamePath = fullPath;
     return true;
@@ -907,6 +969,77 @@ void QSPFrame::QuickLoadFromSlot()
     }
     if (OpenGameState(slotPath))
         ShowToast(_("Quick save loaded"), QSP_TOAST_SUCCESS);
+}
+
+/* The engine will not name the location the player is standing in: it exports
+   the one it is *executing*, which is reset once control returns. $CURLOC is
+   the way to the other one. Only used to label a slot, so a failure here just
+   means a slot with a date and no name. */
+wxString QSPFrame::GetCurrentLocationName() const
+{
+    QSP_CHAR buffer[512];
+    if (!QSPCalculateStrExpression(QSP_STATIC_STR(QSP_FMT("$CURLOC")), buffer, (int)(sizeof(buffer) / sizeof(buffer[0])), QSP_FALSE))
+        return wxEmptyString;
+    return wxString(buffer);
+}
+
+void QSPFrame::SaveToNumberedSlot(int slot)
+{
+    if (!m_isGameOpened || !m_toProcessEvents) return;
+    if (!CanSaveGame())
+    {
+        /* NOSAVE is the game switching saving off for now */
+        ShowToast(_("This game doesn't allow saving"), QSP_TOAST_ERROR);
+        return;
+    }
+    wxString slotPath(m_saveSlots.GetSlotPath(slot));
+    if (slotPath.IsEmpty()) return;
+
+    /* The location is read before the save, not after: writing the file is
+       what can fail, and by then the answer is already in hand. */
+    wxString location(GetCurrentLocationName());
+    if (!SaveGameState(slotPath, false))
+    {
+        ShowToast(wxString::Format(_("Couldn't write slot %d"), slot), QSP_TOAST_ERROR);
+        return;
+    }
+    m_saveSlots.Remember(slot, location);
+    ShowToast(wxString::Format(_("Saved to slot %d"), slot), QSP_TOAST_SUCCESS);
+}
+
+void QSPFrame::LoadFromNumberedSlot(int slot)
+{
+    if (!m_isGameOpened || !m_toProcessEvents) return;
+    wxString slotPath(m_saveSlots.GetSlotPath(slot));
+    /* Loading is deliberately not tied to $NOSAVE, for the same reason the
+       quick slot isn't: a slot can only exist if the game allowed saving when
+       it was written. */
+    if (slotPath.IsEmpty() || !wxFileExists(slotPath))
+    {
+        ShowToast(wxString::Format(_("Slot %d is empty"), slot), QSP_TOAST_INFO);
+        return;
+    }
+    if (OpenGameState(slotPath))
+        ShowToast(wxString::Format(_("Loaded slot %d"), slot), QSP_TOAST_SUCCESS);
+}
+
+/* Rebuilt every time the menu opens rather than kept in step with the saves:
+   a slot can be written by a second copy of the player or deleted from the
+   file manager, and the menu is the only place it is ever read. */
+void QSPFrame::RefreshSlotLabels()
+{
+    if (!m_saveSlotsMenu || !m_loadSlotsMenu) return;
+
+    for (int slot = 1; slot <= QSPSaveSlots::Count; ++slot)
+    {
+        wxString label(m_saveSlots.Describe(slot));
+        m_saveSlotsMenu->SetLabel(ID_SAVESLOT1 + slot - 1, label);
+        m_loadSlotsMenu->SetLabel(ID_LOADSLOT1 + slot - 1, label);
+        /* An empty slot has nothing to load, but is a perfectly good place to
+           save to - so only the load side is greyed out. */
+        m_loadSlotsMenu->Enable(ID_LOADSLOT1 + slot - 1,
+                                m_isGameOpened && m_saveSlots.GetInfo(slot).isUsed);
+    }
 }
 
 void QSPFrame::ShowToast(const wxString &text, QSPToastKind kind)
@@ -1071,6 +1204,26 @@ void QSPFrame::OnQuickLoadSlot(wxCommandEvent& WXUNUSED(event))
     QuickLoadFromSlot();
 }
 
+void QSPFrame::OnSaveToSlot(wxCommandEvent& event)
+{
+    SaveToNumberedSlot(event.GetId() - ID_SAVESLOT1 + 1);
+}
+
+void QSPFrame::OnLoadFromSlot(wxCommandEvent& event)
+{
+    LoadFromNumberedSlot(event.GetId() - ID_LOADSLOT1 + 1);
+}
+
+/* Filling the slot labels in on open is what keeps them true without watching
+   the filesystem. It fires for every menu, including the popup a game puts up
+   through SHOWMENU, so the work is skipped unless the Game menu is the one
+   being opened. */
+void QSPFrame::OnMenuOpen(wxMenuEvent& event)
+{
+    event.Skip();
+    if (event.GetMenu() == m_gameMenu) RefreshSlotLabels();
+}
+
 void QSPFrame::OnSelectFont(wxCommandEvent& WXUNUSED(event))
 {
     wxFontData data;
@@ -1119,6 +1272,8 @@ void QSPFrame::OnSelectFontColor(wxCommandEvent& WXUNUSED(event))
     if (dialog.ShowModal() == wxID_OK)
     {
         m_fontColor = dialog.GetColourData().GetColour();
+        /* An explicit choice stops the desktop theme overwriting it */
+        SetUseSystemColors(false);
         if (m_toProcessEvents)
             ApplyParams();
         else
@@ -1138,6 +1293,8 @@ void QSPFrame::OnSelectBackColor(wxCommandEvent& WXUNUSED(event))
     if (dialog.ShowModal() == wxID_OK)
     {
         m_backColor = dialog.GetColourData().GetColour();
+        /* An explicit choice stops the desktop theme overwriting it */
+        SetUseSystemColors(false);
         if (m_toProcessEvents)
             ApplyParams();
         else
@@ -1157,6 +1314,8 @@ void QSPFrame::OnSelectLinkColor(wxCommandEvent& WXUNUSED(event))
     if (dialog.ShowModal() == wxID_OK)
     {
         m_linkColor = dialog.GetColourData().GetColour();
+        /* An explicit choice stops the desktop theme overwriting it */
+        SetUseSystemColors(false);
         if (m_toProcessEvents)
             ApplyParams();
         else
@@ -1165,6 +1324,21 @@ void QSPFrame::OnSelectLinkColor(wxCommandEvent& WXUNUSED(event))
             RefreshUI();
         }
     }
+}
+
+void QSPFrame::OnUseSystemColors(wxCommandEvent& event)
+{
+    m_toUseSystemColors = event.IsChecked();
+    ApplySystemColors();
+}
+
+/* The desktop switched between light and dark while the player was running.
+   wxWidgets sends this to every window; only the frame acts on it, because the
+   panes take their colours from here. */
+void QSPFrame::OnSysColourChanged(wxSysColourChangedEvent& event)
+{
+    event.Skip();
+    ApplySystemColors();
 }
 
 void QSPFrame::OnCheckUpdatesOnStartup(wxCommandEvent& WXUNUSED(event))
@@ -1275,7 +1449,7 @@ void QSPFrame::OnLinkClicked(wxHtmlLinkEvent& event)
         else if (href.Upper().StartsWith(wxT("EXEC:")))
         {
             wxString string = href.Mid(5);
-            if (m_toProcessEvents && !QSPExecString(qspStringFromLen(string.c_str(), string.Length()), QSP_TRUE))
+            if (m_toProcessEvents && !QSPExecString(QSPMutableString(string), QSP_TRUE))
                 ShowError();
         }
         else
@@ -1317,6 +1491,26 @@ namespace
 /* Everything the game's JS asks of the engine lands here, one queued call at a
    time, and every one of them answers - a promise left pending in the page
    would be indistinguishable from a hang. */
+/* A game script that fails silently is indistinguishable from one that does
+   nothing, so everything the shell catches lands here. It goes to the log,
+   which is why --log-file exists, and to a connected editor. It deliberately
+   does not interrupt the player: a warning from a game's hud.js is not the
+   reader's problem, and a modal per console.warn would be unusable. */
+void QSPFrame::OnScriptDiag(QSPScriptDiagEvent& event)
+{
+    wxString where(event.GetWhere());
+    wxString detail(event.GetText());
+    if (!where.IsEmpty()) detail << wxT(" [") << where << wxT("]");
+
+    if (event.GetKind() == wxT("warning"))
+        wxLogWarning(wxT("game script (%s pane): %s"), event.GetPane(), detail);
+    else
+        wxLogError(wxT("game script (%s pane): %s"), event.GetPane(), detail);
+
+    if (m_devServer)
+        m_devServer->NotifyScriptDiag(event.GetKind(), event.GetText(), where, event.GetPane());
+}
+
 void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
 {
     QSPWebTextBox *pane = wxDynamicCast(event.GetEventObject(), QSPWebTextBox);
@@ -1360,7 +1554,7 @@ void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
         else
         {
             wxString locName(event.GetArg(0));
-            if (!QSPExecLocationCode(qspStringFromLen(locName.c_str(), locName.Length()), QSP_TRUE))
+            if (!QSPExecLocationCode(QSPMutableString(locName), QSP_TRUE))
             {
                 pane->ResolveScriptCall(callId, false, LastErrorText(), false);
                 ShowError();
@@ -1370,7 +1564,7 @@ void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
             return;
         }
 
-        if (!QSPExecString(qspStringFromLen(code.c_str(), code.Length()), QSP_TRUE))
+        if (!QSPExecString(QSPMutableString(code), QSP_TRUE))
         {
             pane->ResolveScriptCall(callId, false, LastErrorText(), false);
             ShowError();
@@ -1383,7 +1577,7 @@ void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
     if (op == wxT("eval") || op == wxT("evalnum"))
     {
         wxString expr(event.GetArg(0));
-        QSPString exprString = qspStringFromLen(expr.c_str(), expr.Length());
+        QSPMutableString exprString(expr);
         if (op == wxT("evalnum"))
         {
             QSP_BIGINT result = 0;
@@ -1425,7 +1619,7 @@ void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
         pane->ResolveScriptCall(callId, false, _("Incorrect variable name"), false);
         return;
     }
-    QSPString varName = qspStringFromLen(name.c_str(), name.Length());
+    QSPMutableString varName(name);
 
     if (op == wxT("get"))
     {
@@ -1453,7 +1647,7 @@ void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
     {
         int index = -1;
         wxString key(event.GetArg(1));
-        if (!QSPGetVarIndexByString(varName, qspStringFromLen(key.c_str(), key.Length()), &index))
+        if (!QSPGetVarIndexByString(varName, QSPMutableString(key), &index))
             index = -1;
         pane->ResolveScriptCall(callId, true, wxString::Format(wxT("%d"), index), true);
         return;
@@ -1529,6 +1723,16 @@ void QSPFrame::OnKey(wxKeyEvent& event)
             QuickLoadFromSlot();
             return;
         }
+    }
+    /* F12 wherever it is pressed, not just inside a pane: the devtools are
+       for the pane the game's script is failing in, and the author may well
+       be looking at the action list when they reach for them. */
+    if (!event.HasModifiers() && event.GetKeyCode() == WXK_F12 &&
+        QSPMainTextBox::IsDevModeEnabled())
+    {
+        QSPMainTextBox *target = (event.GetEventObject() == m_vars ? m_vars : m_desc);
+        if (target) target->ShowDevTools();
+        return;
     }
 #endif
     // Process action shortcut

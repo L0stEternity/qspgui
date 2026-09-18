@@ -3,4 +3,12 @@
 
 #define QSPGUI_VER_STR "@APP_VERSION@"
 
+/* The numeric parts, for places that cannot take a string: the Windows
+   VERSIONINFO resource wants four comma-separated integers. A version such as
+   "5.9.5-b3" reduces to 5, 9, 5 here - the pre-release suffix survives only in
+   QSPGUI_VER_STR. */
+#define QSPGUI_VER_MAJOR @PROJECT_VERSION_MAJOR@
+#define QSPGUI_VER_MINOR @PROJECT_VERSION_MINOR@
+#define QSPGUI_VER_PATCH @PROJECT_VERSION_PATCH@
+
 #endif

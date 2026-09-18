@@ -1,0 +1,3 @@
+# Vendored single-header libraries - miniaudio, stb_vorbis, tsf, tml.
+# Reformatting them would make every upstream update a merge conflict.
+qspgui/sound/*

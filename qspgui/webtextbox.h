@@ -19,9 +19,8 @@
     #define WEBTEXTBOX_H
 
     #include <wx/wx.h>
-    #include <wx/webview.h>
     #include <wx/arrstr.h>
-    #include "pathprovider.h"
+    #include "webpane.h"
 
     class QSPWebTextBox;
 
@@ -63,6 +62,7 @@
 
     wxDECLARE_EVENT(wxEVT_QSP_SCRIPT_CALL, QSPScriptCallEvent);
 
+
     /* Drop-in replacement for QSPTextBox backed by a real browser engine
        (WebView2 on Windows, WebKitGTK on Linux, WKWebView on macOS).
 
@@ -73,10 +73,9 @@
        have decoded, and only then swaps which layer is visible. The old
        content stays on screen until the new one is complete, so the pane goes
        straight from one finished state to the next. */
-    class QSPWebTextBox : public wxPanel
+    class QSPWebTextBox : public QSPWebPane
     {
         DECLARE_CLASS(QSPWebTextBox)
-        DECLARE_EVENT_TABLE()
     public:
         // C-tors / D-tor
         QSPWebTextBox(wxWindow *parent, wxWindowID id);
@@ -84,7 +83,6 @@
         // Methods
         void RefreshUI();
         void LoadBackImage(const wxString& imagePath);
-        void SetPathProvider(PathProvider *provider);
         void LoadPage(const wxString& location);
         /* Game-supplied CSS and JS. Both are declarative: the pane holds the
            current value and re-applies it whenever the document is rebuilt, so
@@ -95,7 +93,6 @@
         void ResolveScriptCall(long callId, bool isOk, const wxString& value, bool isNum);
 
         // Accessors
-        void SetPaneName(const wxString& name);
         void SetIsHtml(bool isHtml);
         void SetText(const wxString& text, bool toScroll = false);
         /* A single refresh touches the pane repeatedly - text, colours, font,
@@ -122,30 +119,15 @@
         wxString BuildStyleObject() const;
         wxString BuildUserStylesScript() const;
         wxString BuildUserScriptsScript() const;
-        void RunScript(const wxString& script);
-        void SetupGameFolderAccess();
-        bool SetupShellHost();
-        void LoadShell();
-        wxString GetShellDir() const;
-        wxString GetShellPath() const;
-        void WriteShellFile();
+        static wxString BuildShellDocument();
 
-        // Events
-        void OnSize(wxSizeEvent& event);
-        void OnWebViewLoaded(wxWebViewEvent& event);
-        void OnWebViewNavigating(wxWebViewEvent& event);
-        void OnWebViewError(wxWebViewEvent& event);
-        void OnScriptMessage(wxWebViewEvent& event);
+        // Overridden from QSPWebPane
+        virtual void OnShellReady();
+        virtual void OnPaneMessage(const wxString& message);
 
         // Fields
-        wxWebView *m_view;
-        wxString m_shellUrl;
-        wxString m_shellVersion;
-        bool m_isShellRequested;
-        bool m_isShellReady;
         bool m_isUpdatePending;
         int m_updateDepth;
-        PathProvider *m_pathProvider;
         bool m_toUseHtml;
         bool m_toScroll;
         wxString m_text;
@@ -154,9 +136,6 @@
         wxColour m_linkColor;
         wxColour m_backColor;
         wxColour m_fontColor;
-        wxString m_gameDir;
-        wxString m_baseUrl;
-        wxString m_paneName;
         wxString m_userCss;
         wxArrayString m_userCssFiles;
         wxString m_userJs;

@@ -20,6 +20,8 @@
 
     #include <wx/wx.h>
     #include <wx/filename.h>
+    #include <wx/arrstr.h>
+    #include "pathprovider.h"
     #include "animwin.h"
 
     class QSPImgCanvas : public wxWindow
@@ -34,6 +36,14 @@
         // Methods
         bool OpenFile(const wxString& fullPath);
         void RefreshUI();
+        /* Game-supplied CSS needs a real browser engine, so the classic
+           renderer ignores it. Present so both renderers share an interface. */
+        void SetUserStyles(const wxString& WXUNUSED(inlineCss),
+                           const wxArrayString& WXUNUSED(files)) {}
+        /* This canvas is handed an already-composed absolute path and decodes
+           it itself, so it has nothing to resolve. Present so both renderers
+           share an interface. */
+        void SetPathProvider(PathProvider *WXUNUSED(provider)) {}
 
         // Overloaded methods
         virtual bool SetBackgroundColour(const wxColour& color);

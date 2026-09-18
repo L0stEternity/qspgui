@@ -349,3 +349,30 @@ msgstr "Ĉi tiu ludo ne permesas savi"
 
 msgid "Couldn't write the quick save"
 msgstr "Ne eblis skribi la rapidan savon"
+
+msgid "Follow s&ystem light / dark theme"
+msgstr "Sekvi s&isteman helan / malhelan etoson"
+
+msgid "Save to slo&t"
+msgstr "Konservi en fa&kon"
+
+msgid "Load from slo&t"
+msgstr "Ŝargi el fa&ko"
+
+msgid "&%d: empty"
+msgstr "&%d: malplena"
+
+msgid "saved"
+msgstr "konservita"
+
+msgid "Saved to slot %d"
+msgstr "Konservita en fakon %d"
+
+msgid "Couldn't write slot %d"
+msgstr "Ne eblis skribi fakon %d"
+
+msgid "Slot %d is empty"
+msgstr "Fako %d estas malplena"
+
+msgid "Loaded slot %d"
+msgstr "Fako %d ŝargita"

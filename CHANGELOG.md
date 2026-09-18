@@ -121,9 +121,184 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   interrupting play for. A floating frame rather than a child window, because the
   browser pane would paint over anything put on top of it.
 
+- **The action list, the object list and the image pane render in the browser
+  engine too** (`qspgui/weblistbox.{h,cpp}` — new `QSPWebListBox`;
+  `qspgui/webimgcanvas.{h,cpp}` — new `QSPWebImgCanvas`), selected through the
+  `QSPMainListBox` and `QSPMainImgCanvas` typedefs alongside `QSPMainTextBox`.
+  The whole player is now one renderer rather than two, so a game's CSS reaches
+  its lists and its picture as well as its prose, and item images get the same
+  modern formats the descriptions already had.
+  - The image pane was the clearest win: the classic canvas decodes with
+    `wxImage`, caches a scaled `wxBitmap` against the pane size, redoes that on
+    every resize, and hands animated GIFs to a separate always-on-top child
+    window because wxWidgets cannot animate inside a paint handler. That is one
+    `<img>` and `object-fit: contain` here — and WebP, AVIF and APNG come free.
+  - Behaviour is unchanged where readers would notice: the action list still
+    selects on hover and runs on a single click, the object list still selects
+    on click, `[1]`-style numbering still follows the hotkeys setting, and the
+    selection still uses the desktop's own highlight colours rather than the
+    game's.
+  - Both lists share one document, and it is rebuilt only when the contents
+    actually changed — games call `SHOWACTS` and `SHOWOBJS` constantly with the
+    list already holding what is being set.
+
+- **`qspgui/webpane.{h,cpp}` — new `QSPWebPane`**, the base every web-backed
+  pane now derives from. It owns the view, the shell document, the virtual
+  hosts, the navigation veto, keyboard forwarding and the developer aids;
+  a subclass supplies its own document and is told when it is live. `QSPWebTextBox`
+  was rebased onto it, so that machinery has one copy rather than four.
+
+- **Numbered save slots** (`qspgui/saveslots.{h,cpp}` — new `QSPSaveSlots`), as
+  two submenus in the Game menu. Nine slots per game, beside the game file the
+  way the quick slot already is, so uninstalling a game takes its saves with it.
+  - The menu shows what is in each slot — location and timestamp — because a
+    `.sav` says nothing about itself: the engine's format has no header a player
+    can read without loading it, and loading it is the one thing a "which save
+    is this?" question must not do. A sidecar written next to the game carries
+    the description.
+  - The sidecar is advisory throughout. The save file is the truth: a slot whose
+    `.sav` was deleted from the file manager is empty however the sidecar
+    describes it, and a `.sav` dropped in by hand still loads, just with nothing
+    to show for itself in the menu. Labels are rebuilt when the menu opens, so a
+    slot written by a second copy of the player reads correctly.
+
+- **Breakpoints and stepping in the development API.** `break`, `pause` and
+  `resume`, with `paused` / `resumed` notifications. The engine has no debugger;
+  what it has is a callback per executed line, which is enough to decide whether
+  to stop — and stopping is simply not returning from it.
+  - The pause does not pump the event loop. It reads the client sockets
+    directly, and only the commands that cannot call back into the interpreter
+    are answered while it is held — `resume`, `pause`, `break`, `ping`, `hello`
+    and `getVar`. Everything else keeps its place in the queue and runs on the
+    resume; it is late, not refused.
+  - Pumping was the first attempt and it was unsound twice over, which is worth
+    recording because it looks reasonable. A breakpoint is reached from inside
+    `Dispatch` — an `exec` is what ran the code — so `m_inCommand` was already
+    set and the nested drain could never serve anything: the pause could not be
+    resumed at all. And a client dropped during the nested pump was destroyed
+    while the outer `Dispatch` frame still held its pointer and was about to
+    write the response to it, which segfaulted the player.
+  - Losing every client resumes the game rather than leaving the player wedged
+    on a breakpoint nobody is left to clear, and a client that disconnects while
+    stopped is left alone until then rather than torn down mid-pause. The debug
+    callback is installed only while tracing, a breakpoint or a pending step
+    wants it, so an ordinary session pays nothing for it.
+
+- **Errors in a game's own JavaScript are reported** instead of vanishing.
+  Throws, rejected promises, `console.error` / `console.warn` and assets that
+  would not load all reach the host, which logs them and pushes a `scriptError`
+  notification to a connected editor. `$USERJS` is a supported feature, so a
+  syntax error in a game's `hud.js` should not be indistinguishable from a
+  script that does nothing.
+
+- **Developer tools**, on under `--dev` and off otherwise: F12 opens them, and
+  the browser context menu is left enabled as the way in on backends with no
+  devtools API. Shipping `$USERCSS` and `$USERJS` without a way to debug them
+  was half a feature.
+
+- **`--log-file` and `--log-level`.** A GUI build has no console attached on
+  Windows, so the stock stderr target drops everything it is given — which is
+  why a bug report never arrives with a log. Dev mode turns the log on by
+  itself, next to the executable, since an editor driving the player is exactly
+  when the detail is wanted. The file is truncated past 4 MB rather than rotated.
+
+- **Following the desktop's light / dark theme.** A new "Follow system light /
+  dark theme" item under Colors, on by default for a fresh config and cleared
+  the moment a colour is picked by hand — an explicit choice is not something to
+  quietly overwrite. The palette is re-applied when the desktop switches while
+  the player is running, and `MSWEnableDarkMode` themes the parts the player
+  does not paint itself: the menu bar, the AUI captions, the scrollbars and the
+  common dialogs. A game's `$BCOLOR` / `$FCOLOR` / `$LCOLOR` still win over all
+  of it — these are only the player's own defaults.
+
+- **Unit tests** (`tests/`), built with `-DQSPGUI_BUILD_TESTS=ON` and run through
+  `ctest`. 45 cases over the pieces that are parsers or boundary checks, which is
+  exactly the code that should not be verified by running the player and looking
+  at it:
+  - `QSPCode` — the escaping that turns outside input into a line of QSP the
+    engine will run, including the `<<`-substitution defusal and the variable
+    names that would otherwise become code.
+  - `QSPJsonReader` / `QSPJsonBuilder` — a hand-written parser sitting on a
+    socket, including malformed input and braces inside strings.
+  - `QSPPaths` — the containment that keeps a game inside its own folder.
+  - `QSPFileIO` and `QSPSaveSlots`.
+  - The runner is in `tests/testing.{h,cpp}`: small enough not to be a
+    dependency, and a failing check records itself rather than aborting, so one
+    run reports every broken expectation instead of only the first.
+
+- **A one-step release build for Windows** (`build_release_msvc.ps1`). Configures,
+  builds, installs, verifies and zips the player in a single command, producing
+  one folder that runs from anywhere:
+
+  ```
+  .\build_release_msvc.ps1 -Version 5.9.6
+  ```
+
+  Previously a release had to be assembled by hand: `cmake --build` left the exe
+  and `qsp.dll` in the build tree with no translations and no soundfont beside
+  them, so the player fell back to English and silent MIDI unless a separate
+  install step was run. The version defaults to `git describe`, the renderer to
+  wxWebView (`-Classic` for the other one), and `-Tests` gates the package on the
+  unit tests passing. The script is the native counterpart to
+  `build_release_windows.sh`, which cross-compiles the official release in docker
+  and is unchanged.
+
+  Before zipping it checks the things that have actually been shipped broken: that
+  the binary carries a version resource, that `qsp.dll`, `langs` and
+  `sound/midi.sf2` are present, that there is one catalogue per `.po` file, and
+  that no catalogue is older than its source. A stray `qspgui.cfg` left by a test
+  run is dropped rather than shipped, since it carries window geometry and the
+  last used language.
+
+- **Translations are compiled from `create_lang/*.po` during the build.** They
+  were generated by hand and committed, so editing a `.po` without remembering to
+  re-run the converter left the built `.mo` behind — which is what had happened:
+  the committed catalogues held 99 strings against the 106 in the sources, so the
+  quick save and load messages appeared untranslated in every language.
+
+  `build_packages/msgfmt.py` compiles them, since gettext is not present on a
+  stock Windows box; a real `msgfmt` is used instead when one is installed, as it
+  also validates the catalogue. With neither available the build falls back to the
+  committed files and says so. Fuzzy and empty translations are skipped, as
+  gettext does, so an unconfirmed guess shows the original string instead.
+
+- **A version resource in `qspgui.exe`.** The binary reported no version at all to
+  Explorer, to installers, or to anything else that reads file metadata.
+  `APP_VERSION` now also produces `FILEVERSION` / `PRODUCTVERSION` and the
+  accompanying strings; a pre-release suffix such as `5.9.6-b1` survives in the
+  displayed version and is truncated to `5.9.6` for the numeric fields, which only
+  take integers.
+
 - `CHANGELOG.md`.
 
 ### Changed
+
+- **The build tree is runnable.** `langs/` and `sound/` are staged next to the
+  freshly built exe (into `Contents/Resources` for the macOS bundle), so a
+  development build behaves like an installed one instead of quietly losing its
+  data files.
+
+- **Whole-file I/O and session serialisation moved to `comtools`** (`QSPFileIO`,
+  `QSPGameState`). Eight sites open-coded the same `malloc` / read / `free`,
+  each with its own subset of the checks — one of them with an early return that
+  leaked the buffer when the player was quit from inside a game load. The engine
+  takes sizes as `int`, so a file it could never address is now rejected rather
+  than wrapping into a small allocation.
+
+- **Path containment moved to `QSPPaths`** in `comtools`, out of `QSPFrame`.
+  `ComposeGamePath` and `IsValidFullPath` forward to it. Same behaviour, but it
+  is now reachable from a test rather than only from a running frame.
+
+- **The development API's JSON moved to `qspgui/devjson.{h,cpp}`**, out of the
+  2300-line `devserver.cpp`. It depends on nothing but `wxString`, which is what
+  lets the tests exercise it.
+
+- **C++17**, up from C++11, with `.clang-format` matching the style the player is
+  already written in. `qspgui/sound/` is excluded — reformatting vendored
+  single-header libraries would make every upstream update a merge conflict.
+
+- `--dev-port` out of range is now an error rather than a silent wrap, and
+  `--dev-token` on its own turns the API on the way naming a port does.
 
 - QSP code generation (`ToQspLiteral`, `IsValidVarName`, `ToQspIndex`,
   `BuildAssignment`) moved from a private block in `frame.cpp` to `QSPCode` in
@@ -206,10 +381,24 @@ These are the details that make the port behave; they are easy to get wrong.
   `#anchor` and `EXEC:` keep their existing meaning and `QSPFrame::OnLinkClicked`
   is used unmodified.
 
+- **One browser instance per pane.** Five panes now host a `wxWebView`, and each
+  Edge instance costs a renderer process. They share one environment, so the
+  browser process is shared, but the memory is real — this is the price of the
+  whole player being one renderer, and it is worth knowing before profiling a
+  memory figure against the classic build.
+
+- **A breakpoint blocks inside the engine's debug callback and runs no event
+  loop.** `QSPDevServer::EnterPause` reads the client sockets itself through
+  `ServePaused`, because pumping wxWidgets from there re-enters `Dispatch` and
+  can destroy a socket an outer frame still holds. Only `IsPauseSafeMethod`
+  passes, and the bar there is not "read-only" but "does not call back into the
+  interpreter".
+
+- **The shell document is per pane kind**, one file each behind the same shell
+  host, each tagged with a hash of its own contents.
+
 ### Not yet ported
 
-- The action and object lists (`QSPListBox`) and the image pane (`QSPImgCanvas`)
-  still use the classic renderer.
 - `msgdlg` / `inputdlg` still use `QSPTextBox`; they rely on
   `GetInternalRepresentation()` for auto-sizing.
 - On GTK and macOS the document base falls back to `file://`, which does not provide
