@@ -328,3 +328,24 @@ msgstr "检查最新版本"
 
 msgid "Check for updates on startup"
 msgstr "启动时检查更新"
+
+msgid "Quick save &slot\tF5"
+msgstr "&快速存档槽\tF5"
+
+msgid "Load quick save s&lot\tF9"
+msgstr "读取快速存档&槽\tF9"
+
+msgid "Quick saved"
+msgstr "已快速存档"
+
+msgid "Quick save loaded"
+msgstr "已读取快速存档"
+
+msgid "No quick save for this game yet"
+msgstr "该游戏还没有快速存档"
+
+msgid "This game doesn't allow saving"
+msgstr "该游戏不允许存档"
+
+msgid "Couldn't write the quick save"
+msgstr "无法写入快速存档"

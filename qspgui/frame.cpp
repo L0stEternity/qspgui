@@ -18,6 +18,7 @@
 #include "frame.h"
 #include "comtools.h"
 #include "callbacks_gui.h"
+#include "devserver.h"
 
 #include "icons/logo.xpm"
 #include "icons/logo_big.xpm"
@@ -39,6 +40,8 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MENU(ID_OPENGAMESTAT, QSPFrame::OnOpenGameStat)
     EVT_MENU(ID_SAVEGAMESTAT, QSPFrame::OnSaveGameStat)
     EVT_MENU(ID_QUICKSAVE, QSPFrame::OnQuickSave)
+    EVT_MENU(ID_QUICKSAVESLOT, QSPFrame::OnQuickSaveSlot)
+    EVT_MENU(ID_QUICKLOADSLOT, QSPFrame::OnQuickLoadSlot)
     EVT_MENU(ID_SELECTFONT, QSPFrame::OnSelectFont)
     EVT_MENU(ID_USEFONTSIZE, QSPFrame::OnUseFontSize)
     EVT_MENU(ID_SELECTFONTCOLOR, QSPFrame::OnSelectFontColor)
@@ -79,6 +82,7 @@ wxIMPLEMENT_CLASS(QSPFrame, wxFrame);
 
 QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper) :
     wxFrame(NULL, wxID_ANY, wxEmptyString),
+    m_devServer(0),
     m_configDefPath(configPath),
     m_configPath(configPath),
     m_transHelper(transHelper)
@@ -112,6 +116,9 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     wxMenuItem *gameSaveItem = new wxMenuItem(m_gameMenu, ID_QUICKSAVE, wxT("-"));
     gameSaveItem->SetBitmap(wxBitmap(statussave_xpm));
     m_gameMenu->Append(gameSaveItem);
+    m_gameMenu->AppendSeparator();
+    m_gameMenu->Append(ID_QUICKSAVESLOT, wxT("-"));
+    m_gameMenu->Append(ID_QUICKLOADSLOT, wxT("-"));
     // ------------
     wxMenu *wndsMenu = new wxMenu;
     wndsMenu->Append(ID_TOGGLEOBJS, wxT("-"));
@@ -184,6 +191,13 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_objects->SetPathProvider(this);
     m_actions->SetPathProvider(this);
     m_vars->SetPathProvider(this);
+    m_desc->SetPaneName(wxT("main"));
+    m_vars->SetPaneName(wxT("vars"));
+#ifdef QSPGUI_USE_WEBVIEW
+    Bind(wxEVT_QSP_SCRIPT_CALL, &QSPFrame::OnScriptCall, this);
+#endif
+    // --------------------------------------
+    m_toast = new QSPToast(this);
     // --------------------------------------
     SetMinClientSize(wxSize(450, 300));
     SetOverallVolume(100);
@@ -197,6 +211,7 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
 
 QSPFrame::~QSPFrame()
 {
+    delete m_devServer;
     m_manager->UnInit();
     delete m_manager;
     delete m_menu;
@@ -313,6 +328,8 @@ void QSPFrame::EnableControls(bool status, bool isExtended)
     m_gameMenu->Enable(ID_OPENGAMESTAT, status);
     m_gameMenu->Enable(ID_SAVEGAMESTAT, status);
     m_gameMenu->Enable(ID_QUICKSAVE, status);
+    m_gameMenu->Enable(ID_QUICKSAVESLOT, status);
+    m_gameMenu->Enable(ID_QUICKLOADSLOT, status);
     m_settingsMenu->Enable(ID_TOGGLEOBJS, status);
     m_settingsMenu->Enable(ID_TOGGLEACTS, status);
     m_settingsMenu->Enable(ID_TOGGLEDESC, status);
@@ -490,6 +507,22 @@ void QSPFrame::UpdateGamePath(const wxString &fullPath)
     m_worldPath = fileName.GetPath(wxPATH_GET_VOLUME | wxPATH_GET_SEPARATOR);
 }
 
+/* Keeps the full path of the world file, which UpdateGamePath discards -
+   the development API needs it to reload the game from disk. */
+void QSPFrame::UpdateGameFile(const wxString &fullPath)
+{
+    m_gameFilePath = fullPath;
+    UpdateGamePath(fullPath);
+}
+
+bool QSPFrame::StartDevServer(unsigned short port, const wxString &token)
+{
+    if (!m_devServer)
+        m_devServer = new QSPDevServer(this);
+
+    return m_devServer->Start(port, token);
+}
+
 wxString QSPFrame::ComposeGamePath(const wxString &relativePath) const
 {
     if (relativePath.IsEmpty())
@@ -522,6 +555,7 @@ void QSPFrame::ShowError()
     if (m_toQuit) return;
     QSPErrorInfo errorInfo = QSPGetLastErrorData();
     if (!errorInfo.ErrorNum) return; // error is undefined
+    if (m_devServer) m_devServer->NotifyError();
     wxString locName(qspToWxString(errorInfo.LocName));
     wxString errorDesc(qspToWxString(errorInfo.ErrorDesc));
     wxString line(qspToWxString(errorInfo.IntLine));
@@ -591,6 +625,8 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_OPENGAMESTAT, _("&Open saved game...\tCtrl-O"));
     menuBar->SetLabel(ID_SAVEGAMESTAT, _("&Save game..."));
     menuBar->SetLabel(ID_QUICKSAVE, _("&Quicksave\tCtrl-S"));
+    menuBar->SetLabel(ID_QUICKSAVESLOT, _("Quick save &slot\tF5"));
+    menuBar->SetLabel(ID_QUICKLOADSLOT, _("Load quick save s&lot\tF9"));
     menuBar->SetLabel(ID_TOGGLEOBJS, _("&Objects\tCtrl-1"));
     menuBar->SetLabel(ID_TOGGLEACTS, _("&Actions\tCtrl-2"));
     menuBar->SetLabel(ID_TOGGLEDESC, _("A&dditional desc\tCtrl-3"));
@@ -753,7 +789,7 @@ void QSPFrame::OpenGameFile(const wxString& fullPath)
         {
             if (QSPLoadGameWorldFromData(fileData, fileSize, QSP_TRUE))
             {
-                UpdateGamePath(fullPath);
+                UpdateGameFile(fullPath);
                 m_isGameOpened = true;
 
                 wxString configString(m_worldPath + QSP_CONFIG);
@@ -772,6 +808,7 @@ void QSPFrame::OpenGameFile(const wxString& fullPath)
                 UpdateTitle();
                 EnableControls(true);
                 m_savedGamePath.Clear();
+                if (m_devServer) m_devServer->NotifyGameOpened(fullPath);
             }
             else
                 ShowError();
@@ -780,8 +817,9 @@ void QSPFrame::OpenGameFile(const wxString& fullPath)
     }
 }
 
-void QSPFrame::OpenGameState(const wxString& fullPath)
+bool QSPFrame::OpenGameState(const wxString& fullPath)
 {
+    bool isOpened = false;
     if (wxFileExists(fullPath))
     {
         wxFile fileToLoad(fullPath);
@@ -789,14 +827,17 @@ void QSPFrame::OpenGameState(const wxString& fullPath)
         void *fileData = (void *)malloc(fileSize);
         if (fileToLoad.Read(fileData, fileSize) == fileSize)
         {
-            if (!QSPOpenSavedGameFromData(fileData, fileSize, QSP_TRUE))
+            if (QSPOpenSavedGameFromData(fileData, fileSize, QSP_TRUE))
+                isOpened = true;
+            else
                 ShowError();
         }
         free(fileData);
     }
+    return isOpened;
 }
 
-void QSPFrame::SaveGameState(const wxString &fullPath)
+bool QSPFrame::SaveGameState(const wxString &fullPath, bool toRemember)
 {
     int fileSize = 64 * 1024;
     void *fileData = (void *)malloc(fileSize);
@@ -812,14 +853,66 @@ void QSPFrame::SaveGameState(const wxString &fullPath)
         {
             free(fileData);
             ShowError();
-            return;
+            return false;
         }
     }
     wxFile fileToSave(fullPath, wxFile::write);
-    fileToSave.Write(fileData, fileSize);
+    bool isSaved = fileToSave.IsOpened() && fileToSave.Write(fileData, fileSize) == (size_t)fileSize;
     free(fileData);
+    if (!isSaved) return false;
 
-    m_savedGamePath = fullPath;
+    if (toRemember) m_savedGamePath = fullPath;
+    return true;
+}
+
+/* The slot lives next to the game file, the way the game's own config does:
+   one quicksave per game, and nothing left behind anywhere else. */
+wxString QSPFrame::GetQuickSavePath() const
+{
+    if (m_gameFilePath.IsEmpty()) return wxEmptyString;
+    wxFileName slotPath(m_gameFilePath);
+    slotPath.SetName(slotPath.GetName() + wxT("_quick"));
+    slotPath.SetExt(wxT("sav"));
+    return slotPath.GetFullPath();
+}
+
+void QSPFrame::QuickSaveToSlot()
+{
+    if (!m_isGameOpened || !m_toProcessEvents) return;
+    if (!CanSaveGame())
+    {
+        /* NOSAVE is the game switching saving off for now */
+        ShowToast(_("This game doesn't allow saving"), QSP_TOAST_ERROR);
+        return;
+    }
+    wxString slotPath(GetQuickSavePath());
+    if (slotPath.IsEmpty()) return;
+    if (SaveGameState(slotPath, false))
+        ShowToast(_("Quick saved"), QSP_TOAST_SUCCESS);
+    else
+        ShowToast(_("Couldn't write the quick save"), QSP_TOAST_ERROR);
+}
+
+void QSPFrame::QuickLoadFromSlot()
+{
+    if (!m_isGameOpened || !m_toProcessEvents) return;
+    wxString slotPath(GetQuickSavePath());
+    /* Loading is deliberately not tied to $NOSAVE: a slot can only exist if
+       the game allowed saving when it was written, and the menu keeps the
+       ordinary "open saved game" available in either case. */
+    if (slotPath.IsEmpty() || !wxFileExists(slotPath))
+    {
+        ShowToast(_("No quick save for this game yet"), QSP_TOAST_INFO);
+        return;
+    }
+    if (OpenGameState(slotPath))
+        ShowToast(_("Quick save loaded"), QSP_TOAST_SUCCESS);
+}
+
+void QSPFrame::ShowToast(const wxString &text, QSPToastKind kind)
+{
+    if (m_toQuit || !m_toast) return;
+    m_toast->Pop(text, kind);
 }
 
 void QSPFrame::CheckLatestVersion(int type)
@@ -887,6 +980,7 @@ void QSPFrame::OnInit(wxInitEvent& event)
 
 void QSPFrame::OnClose(wxCloseEvent& WXUNUSED(event))
 {
+    m_toast->Dismiss();
     SaveSettings();
     EnableControls(false, true);
     Destroy();
@@ -965,6 +1059,16 @@ void QSPFrame::OnQuickSave(wxCommandEvent& event)
         OnSaveGameStat(event);
     else
         SaveGameState(m_savedGamePath);
+}
+
+void QSPFrame::OnQuickSaveSlot(wxCommandEvent& WXUNUSED(event))
+{
+    QuickSaveToSlot();
+}
+
+void QSPFrame::OnQuickLoadSlot(wxCommandEvent& WXUNUSED(event))
+{
+    QuickLoadFromSlot();
 }
 
 void QSPFrame::OnSelectFont(wxCommandEvent& WXUNUSED(event))
@@ -1181,6 +1285,183 @@ void QSPFrame::OnLinkClicked(wxHtmlLinkEvent& event)
         event.Skip();
 }
 
+#ifdef QSPGUI_USE_WEBVIEW
+
+namespace
+{
+    wxString LastErrorText()
+    {
+        QSPErrorInfo errorInfo = QSPGetLastErrorData();
+        if (!errorInfo.ErrorNum) return _("Unknown error");
+        return wxGetTranslation(qspToWxString(errorInfo.ErrorDesc));
+    }
+
+    /* Values come back as text plus a flag, so a numeric variable arrives in
+       JS as a number and everything else as a string. */
+    wxString VariantToText(const QSPVariant& value, bool *isNum)
+    {
+        *isNum = QSP_ISNUM(value.Type) != 0;
+        if (*isNum)
+            return wxLongLong((wxLongLong_t)QSP_NUM(value)).ToString();
+        if (QSP_ISSTR(value.Type))
+            return qspToWxString(QSP_STR(value));
+
+        /* A tuple has no JS counterpart; hand over the engine's own rendering
+           of it so a game can at least read it back. */
+        QSP_CHAR buffer[4096];
+        QSPConvertValueToString(value, buffer, sizeof(buffer) / sizeof(QSP_CHAR));
+        return wxString(buffer);
+    }
+}
+
+/* Everything the game's JS asks of the engine lands here, one queued call at a
+   time, and every one of them answers - a promise left pending in the page
+   would be indistinguishable from a hang. */
+void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
+{
+    QSPWebTextBox *pane = wxDynamicCast(event.GetEventObject(), QSPWebTextBox);
+    if (!pane) return;
+
+    long callId = event.GetCallId();
+    wxString op(event.GetOp());
+    bool toRunCode = (op != wxT("get") && op != wxT("size") && op != wxT("index"));
+
+    /* Anything that runs game code has to wait: the engine is single-threaded
+       and is already busy - the same guard the action list and EXEC: links use.
+       Reads are let through, because a refresh hook fires while a forced
+       refresh is still pumping the loop and reading is what it is there for. */
+    if (m_toQuit || (toRunCode && !m_toProcessEvents))
+    {
+        pane->ResolveScriptCall(callId, false, _("The engine is busy"), false);
+        return;
+    }
+
+    if (op == wxT("exec") || op == wxT("loc") || op == wxT("set") || op == wxT("add"))
+    {
+        wxString code;
+        if (op == wxT("set") || op == wxT("add"))
+        {
+            wxString error;
+            bool toAppend = (op == wxT("add"));
+            /* set(name, index, value), add(name, value) */
+            if (!QSPCode::BuildAssignment(event.GetArg(0),
+                                 toAppend ? wxString() : event.GetArg(1),
+                                 toAppend ? event.GetArg(1) : event.GetArg(2),
+                                 toAppend, &code, &error))
+            {
+                pane->ResolveScriptCall(callId, false, error, false);
+                return;
+            }
+        }
+        else if (op == wxT("exec"))
+        {
+            code = event.GetArg(0);
+        }
+        else
+        {
+            wxString locName(event.GetArg(0));
+            if (!QSPExecLocationCode(qspStringFromLen(locName.c_str(), locName.Length()), QSP_TRUE))
+            {
+                pane->ResolveScriptCall(callId, false, LastErrorText(), false);
+                ShowError();
+                return;
+            }
+            pane->ResolveScriptCall(callId, true, wxEmptyString, false);
+            return;
+        }
+
+        if (!QSPExecString(qspStringFromLen(code.c_str(), code.Length()), QSP_TRUE))
+        {
+            pane->ResolveScriptCall(callId, false, LastErrorText(), false);
+            ShowError();
+            return;
+        }
+        pane->ResolveScriptCall(callId, true, wxEmptyString, false);
+        return;
+    }
+
+    if (op == wxT("eval") || op == wxT("evalnum"))
+    {
+        wxString expr(event.GetArg(0));
+        QSPString exprString = qspStringFromLen(expr.c_str(), expr.Length());
+        if (op == wxT("evalnum"))
+        {
+            QSP_BIGINT result = 0;
+            if (!QSPCalculateNumExpression(exprString, &result, QSP_TRUE))
+            {
+                pane->ResolveScriptCall(callId, false, LastErrorText(), false);
+                ShowError();
+                return;
+            }
+            pane->ResolveScriptCall(callId, true, wxLongLong((wxLongLong_t)result).ToString(), true);
+            return;
+        }
+        QSP_CHAR buffer[4096];
+        if (!QSPCalculateStrExpression(exprString, buffer, sizeof(buffer) / sizeof(QSP_CHAR), QSP_TRUE))
+        {
+            pane->ResolveScriptCall(callId, false, LastErrorText(), false);
+            ShowError();
+            return;
+        }
+        pane->ResolveScriptCall(callId, true, wxString(buffer), false);
+        return;
+    }
+
+    /* Everything left is a read; anything else never had a handler. */
+    if (toRunCode)
+    {
+        pane->ResolveScriptCall(callId, false, _("Unknown operation"), false);
+        return;
+    }
+
+    /* Reads never run game code, so they can't fail the way the calls above
+       can: an unknown name simply has no value. The name is still checked
+       first, because handing the engine a malformed one makes it raise an
+       error - which would overwrite the error state of whatever is running.
+       Past that, the type prefix is left on: the engine strips it itself. */
+    wxString name(event.GetArg(0));
+    if (!QSPCode::IsValidVarName(name))
+    {
+        pane->ResolveScriptCall(callId, false, _("Incorrect variable name"), false);
+        return;
+    }
+    QSPString varName = qspStringFromLen(name.c_str(), name.Length());
+
+    if (op == wxT("get"))
+    {
+        long index = 0;
+        QSPVariant value;
+        if (!event.GetArg(1).ToLong(&index)) index = 0;
+        if (!QSPGetVarValue(varName, (int)index, &value))
+        {
+            pane->ResolveScriptCall(callId, true, wxEmptyString, false);
+            return;
+        }
+        bool isNum = false;
+        wxString text(VariantToText(value, &isNum));
+        pane->ResolveScriptCall(callId, true, text, isNum);
+        return;
+    }
+    if (op == wxT("size"))
+    {
+        int count = 0;
+        QSPGetVarValuesCount(varName, &count);
+        pane->ResolveScriptCall(callId, true, wxString::Format(wxT("%d"), count), true);
+        return;
+    }
+    if (op == wxT("index"))
+    {
+        int index = -1;
+        wxString key(event.GetArg(1));
+        if (!QSPGetVarIndexByString(varName, qspStringFromLen(key.c_str(), key.Length()), &index))
+            index = -1;
+        pane->ResolveScriptCall(callId, true, wxString::Format(wxT("%d"), index), true);
+        return;
+    }
+}
+
+#endif
+
 void QSPFrame::OnObjectChange(wxCommandEvent& event)
 {
     // show selection first
@@ -1232,6 +1513,24 @@ void QSPFrame::OnKey(wxKeyEvent& event)
     // Process key pressed event
     if (event.GetKeyCode() == WXK_SPACE)
         m_keyPressedWhileDisabled = true;
+#ifdef QSPGUI_USE_WEBVIEW
+    /* Quick save / quick load are menu accelerators, and accelerators never
+       see a key pressed inside a browser pane - that one comes back to us as
+       a synthetic event instead, which is what we answer here. */
+    if (!event.HasModifiers() &&
+        (event.GetEventObject() == m_desc || event.GetEventObject() == m_vars))
+    {
+        switch (event.GetKeyCode())
+        {
+        case WXK_F5:
+            QuickSaveToSlot();
+            return;
+        case WXK_F9:
+            QuickLoadFromSlot();
+            return;
+        }
+    }
+#endif
     // Process action shortcut
     if (m_toProcessEvents && !event.HasModifiers() && wxWindow::FindFocus() != m_input)
     {

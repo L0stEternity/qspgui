@@ -131,6 +131,7 @@ set(QSPGUI_SOURCES
 	qspgui/app.cpp
 	qspgui/callbacks_gui.cpp
 	qspgui/comtools.cpp
+	qspgui/devserver.cpp
 	qspgui/frame.cpp
 	qspgui/imgcanvas.cpp
 	qspgui/initevent.cpp
@@ -139,6 +140,7 @@ set(QSPGUI_SOURCES
 	qspgui/listbox.cpp
 	qspgui/msgdlg.cpp
 	qspgui/textbox.cpp
+	qspgui/toast.cpp
 	qspgui/transhelper.cpp
 	qspgui/updateappdialog.cpp
 	qspgui/sound/sound_engine.c

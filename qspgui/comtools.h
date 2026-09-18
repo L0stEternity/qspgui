@@ -48,4 +48,18 @@
         static wxString GetVersion(const wxString& libVersion);
     };
 
+    /* Generating QSP code to hand to QSPExecString. The engine exposes no
+       setter, so every write from outside a game - the JS bridge, the
+       development API - becomes the assignment a game would have written
+       itself, which makes escaping and name validation a shared concern. */
+    class QSPCode
+    {
+    public:
+        static wxString ToQspLiteral(const wxString& value);
+        static bool IsValidVarName(const wxString& name);
+        static wxString ToQspIndex(const wxString& index, bool toAppend);
+        static bool BuildAssignment(const wxString& name, const wxString& index, const wxString& value,
+                                    bool toAppend, wxString *code, wxString *error);
+    };
+
 #endif

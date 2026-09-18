@@ -21,6 +21,8 @@
 #include <wx/filename.h>
 #include <wx/filesys.h>
 #include <wx/ffile.h>
+#include <wx/arrstr.h>
+#include <string>
 
 #ifdef QSPGUI_HAVE_WEBVIEW2_SDK
     #include <WebView2.h>
@@ -36,6 +38,7 @@
 #define QSP_SHELL_FILE wxT("qspgui_shell.html")
 
 wxIMPLEMENT_CLASS(QSPWebTextBox, wxPanel);
+wxDEFINE_EVENT(wxEVT_QSP_SCRIPT_CALL, QSPScriptCallEvent);
 
 BEGIN_EVENT_TABLE(QSPWebTextBox, wxPanel)
     EVT_SIZE(QSPWebTextBox::OnSize)
@@ -71,6 +74,55 @@ namespace
         }
         out << wxT('"');
         return out;
+    }
+
+    /* A JS array literal of strings, for the script/stylesheet lists. */
+    wxString ToJsArray(const wxArrayString& items)
+    {
+        wxString out(wxT("["));
+        for (size_t i = 0; i < items.GetCount(); ++i)
+        {
+            if (i) out << wxT(',');
+            out << ToJsString(items[i]);
+        }
+        out << wxT(']');
+        return out;
+    }
+
+    int HexDigit(wxUniChar ch)
+    {
+        if (ch >= wxT('0') && ch <= wxT('9')) return (int)(ch.GetValue() - wxT('0'));
+        if (ch >= wxT('a') && ch <= wxT('f')) return (int)(ch.GetValue() - wxT('a')) + 10;
+        if (ch >= wxT('A') && ch <= wxT('F')) return (int)(ch.GetValue() - wxT('A')) + 10;
+        return -1;
+    }
+
+    /* Undo encodeURIComponent(). It only ever emits ASCII, with every byte of
+       the UTF-8 form of anything else written out as %XX, so the decoded bytes
+       can be handed straight back to FromUTF8. */
+    wxString FromUriComponent(const wxString& str)
+    {
+        std::string bytes;
+        bytes.reserve(str.Length());
+        for (size_t i = 0; i < str.Length(); ++i)
+        {
+            wxUniChar ch = str[i];
+            if (ch == wxT('%') && i + 2 < str.Length())
+            {
+                int high = HexDigit(str[i + 1]), low = HexDigit(str[i + 2]);
+                if (high >= 0 && low >= 0)
+                {
+                    bytes += (char)(unsigned char)((high << 4) | low);
+                    i += 2;
+                    continue;
+                }
+            }
+            if (ch.GetValue() < 0x80)
+                bytes += (char)ch.GetValue();
+            else
+                bytes += wxString(ch).ToUTF8().data();
+        }
+        return wxString::FromUTF8(bytes.c_str(), bytes.length());
     }
 
     wxString ToCssColor(const wxColour& color)
@@ -147,12 +199,35 @@ QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
     m_view->LoadURL(wxT("about:blank"));
 }
 
+#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
+/* The browser's own shortcuts mean nothing in a game: F5 and Ctrl-R would
+   reload the shell out from under it, and the player's keys are forwarded to
+   the frame, where F5 is quick save. */
+static void DisableBrowserAccelerators(wxWebView *view)
+{
+    ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(view->GetNativeBackend());
+    if (!webView2) return;
+
+    ICoreWebView2Settings *settings = NULL;
+    if (FAILED(webView2->get_Settings(&settings)) || !settings) return;
+
+    ICoreWebView2Settings3 *settings3 = NULL;
+    if (SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3))))
+    {
+        settings3->put_AreBrowserAcceleratorKeysEnabled(FALSE);
+        settings3->Release();
+    }
+    settings->Release();
+}
+#endif
+
 /* Serve the shell over a virtual host as well, so the document and the game
    assets share an https-style origin. A file:// document is not allowed to
    pull resources from a virtual host, which silently breaks every image. */
 bool QSPWebTextBox::SetupShellHost()
 {
 #ifdef QSPGUI_HAVE_WEBVIEW2_SDK
+    DisableBrowserAccelerators(m_view);
     ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(m_view->GetNativeBackend());
     ICoreWebView2_3 *webView2_3 = NULL;
     if (webView2 && SUCCEEDED(webView2->QueryInterface(IID_PPV_ARGS(&webView2_3))))
@@ -196,10 +271,12 @@ wxString QSPWebTextBox::GetShellPath() const
 }
 
 /* The shell is written once per run rather than shipped as a data file so the
-   renderer stays self-contained and can't get out of sync with the binary. */
+   renderer stays self-contained and can't get out of sync with the binary.
+   It is split into several literals only because MSVC caps the length of a
+   single one. */
 void QSPWebTextBox::WriteShellFile()
 {
-    static const wxChar *shell =
+    static const wxChar *shellDocument =
         wxT("<!DOCTYPE html>\n")
         wxT("<html><head><meta charset=\"utf-8\">\n")
         wxT("<base id=\"qsp-base\" href=\"\">\n")
@@ -221,18 +298,26 @@ void QSPWebTextBox::WriteShellFile()
         wxT("overflow-y:auto;overflow-x:hidden;padding:5px;box-sizing:border-box;}\n")
         wxT(".qsp-hidden{visibility:hidden;}\n")
         wxT("img,video{max-width:100%;height:auto;}\n")
-        wxT("</style></head>\n")
+        wxT("</style>\n")
+        /* The game's stylesheets are inserted just above this element and its
+           own inline CSS goes inside it, so both always win over the built-in
+           rules and the inline block always wins over the files. */
+        wxT("<style id=\"qsp-user-css\"></style>\n")
+        wxT("</head>\n")
         wxT("<body>\n")
         wxT("<div id=\"qsp-l0\" class=\"qsp-layer\"></div>\n")
         wxT("<div id=\"qsp-l1\" class=\"qsp-layer qsp-hidden\"></div>\n")
         wxT("<script>\n")
-        wxT("(function(){\n")
+        wxT("(function(){\n");
+
+    static const wxChar *shellCore =
         wxT("var layers=[document.getElementById('qsp-l0'),document.getElementById('qsp-l1')];\n")
         wxT("var base=document.getElementById('qsp-base');\n")
-        wxT("var active=0,token=0;\n")
+        wxT("var active=0,token=0,refreshHooks=[];\n")
         /* The host channel can be a moment late on startup; an exception here
            would take the rest of the shell script down with it. */
-        wxT("function qspPost(m){try{window.qspHost.postMessage(m);}catch(err){}}\n")
+        wxT("function qspPost(m){try{window.qspHost.postMessage(m);return true;}")
+        wxT("catch(err){return false;}}\n")
         wxT("window.qspSetBase=function(href){base.href=href;};\n")
         wxT("function applyStyle(s){\n")
         wxT("  if(!s)return;\n")
@@ -240,6 +325,25 @@ void QSPWebTextBox::WriteShellFile()
         wxT("  r.setProperty('--qsp-bg',s.bg);r.setProperty('--qsp-fg',s.fg);\n")
         wxT("  r.setProperty('--qsp-link',s.link);r.setProperty('--qsp-font',s.font);\n")
         wxT("  r.setProperty('--qsp-size',s.size);r.setProperty('--qsp-bgimg',s.bgimg);\n")
+        wxT("}\n")
+        /* innerHTML never runs a <script>, so a description written in HTML
+           mode would silently drop its code. Re-creating each element makes it
+           execute, and doing it once the layer is on screen means the code can
+           measure and alter what the player is actually looking at. */
+        wxT("function runScripts(root){\n")
+        wxT("  var list=root.querySelectorAll('script'),i,j,old,el,attr;\n")
+        wxT("  for(i=0;i<list.length;i++){\n")
+        wxT("    old=list[i];\n")
+        wxT("    if(!old.parentNode)continue;\n")
+        wxT("    el=document.createElement('script');\n")
+        wxT("    for(j=0;j<old.attributes.length;j++){attr=old.attributes[j];")
+        wxT("el.setAttribute(attr.name,attr.value);}\n")
+        wxT("    el.text=old.textContent;\n")
+        wxT("    old.parentNode.replaceChild(el,old);\n")
+        wxT("  }\n")
+        wxT("}\n")
+        wxT("function notifyRefresh(){\n")
+        wxT("  for(var i=0;i<refreshHooks.length;i++){try{refreshHooks[i]();}catch(err){}}\n")
         wxT("}\n")
         /* Nothing reaches the screen until it is finished. The new markup goes
            into the hidden layer, we wait for its media to become usable, and
@@ -270,6 +374,8 @@ void QSPWebTextBox::WriteShellFile()
         wxT("    layers[active].classList.add('qsp-hidden');\n")
         wxT("    layers[active].innerHTML='';\n")
         wxT("    active=1-active;\n")
+        wxT("    runScripts(back);\n")
+        wxT("    notifyRefresh();\n")
         wxT("  };\n")
         wxT("  if(!waits.length){requestAnimationFrame(swap);return;}\n")
         /* A missing or slow asset must not strand the pane on old content. */
@@ -281,7 +387,126 @@ void QSPWebTextBox::WriteShellFile()
         wxT("  var el=anchor?document.getElementById(anchor):null;\n")
         wxT("  if(!el&&anchor){var n=document.getElementsByName(anchor);el=n.length?n[0]:null;}\n")
         wxT("  if(el)el.scrollIntoView(true);else l.scrollTop=0;\n")
+        wxT("};\n");
+
+    static const wxChar *shellAssets =
+        /* Stylesheets are fully declarative: the host sends the whole current
+           list every time and this rebuilds it only when it actually changed,
+           so a refresh never re-fetches a sheet that is already applied. */
+        wxT("var userStyle=document.getElementById('qsp-user-css');\n")
+        wxT("var cssNodes=[],cssKey=null;\n")
+        wxT("window.qspSetStyles=function(css,files){\n")
+        wxT("  var key=files.join('\\n'),i,link;\n")
+        wxT("  if(key!==cssKey){\n")
+        wxT("    cssKey=key;\n")
+        wxT("    for(i=0;i<cssNodes.length;i++)")
+        wxT("if(cssNodes[i].parentNode)cssNodes[i].parentNode.removeChild(cssNodes[i]);\n")
+        wxT("    cssNodes=[];\n")
+        wxT("    for(i=0;i<files.length;i++){\n")
+        wxT("      link=document.createElement('link');\n")
+        wxT("      link.rel='stylesheet';link.href=files[i];\n")
+        wxT("      document.head.insertBefore(link,userStyle);\n")
+        wxT("      cssNodes.push(link);\n")
+        wxT("    }\n")
+        wxT("  }\n")
+        wxT("  if(userStyle.textContent!==css)userStyle.textContent=css;\n")
         wxT("};\n")
+        /* Scripts are not: running the same code again on every refresh would
+           be wrong, so a script runs when it appears and when its text or its
+           file list changes, and never otherwise. */
+        wxT("var jsNodes=[],jsKey=null,jsInline=null,inlineNode=null;\n")
+        wxT("function runInline(code){\n")
+        wxT("  if(inlineNode&&inlineNode.parentNode)")
+        wxT("inlineNode.parentNode.removeChild(inlineNode);\n")
+        wxT("  inlineNode=null;\n")
+        wxT("  if(!code)return;\n")
+        /* An appended element runs in global scope, unlike eval() in here, so
+           the game's own top-level declarations end up where it expects. */
+        wxT("  var el=document.createElement('script');\n")
+        wxT("  el.text=code;\n")
+        wxT("  document.head.appendChild(el);\n")
+        wxT("  inlineNode=el;\n")
+        wxT("}\n")
+        wxT("window.qspSetScripts=function(code,files){\n")
+        wxT("  var key=files.join('\\n'),i,el,pending=0,done=false;\n")
+        wxT("  var finish=function(){\n")
+        wxT("    if(done)return;\n")
+        wxT("    done=true;\n")
+        wxT("    if(code!==jsInline){jsInline=code;runInline(code);}\n")
+        wxT("  };\n")
+        wxT("  if(key!==jsKey){\n")
+        wxT("    jsKey=key;\n")
+        /* The inline block nearly always calls into the files, so it has to
+           re-run when they do - and wait for them, because a script inserted
+           from code is async unless we say otherwise. */
+        wxT("    jsInline=null;\n")
+        wxT("    for(i=0;i<jsNodes.length;i++)")
+        wxT("if(jsNodes[i].parentNode)jsNodes[i].parentNode.removeChild(jsNodes[i]);\n")
+        wxT("    jsNodes=[];\n")
+        wxT("    for(i=0;i<files.length;i++){\n")
+        wxT("      el=document.createElement('script');\n")
+        wxT("      el.async=false;\n")
+        wxT("      ++pending;\n")
+        wxT("      el.onload=el.onerror=function(){if(--pending===0)finish();};\n")
+        wxT("      el.src=files[i];\n")
+        wxT("      document.head.appendChild(el);\n")
+        wxT("      jsNodes.push(el);\n")
+        wxT("    }\n")
+        wxT("  }\n")
+        wxT("  if(!pending)finish();\n")
+        wxT("};\n");
+
+    static const wxChar *shellBridge =
+        /* Everything the game's JS asks of the engine is a round trip through
+           the host, so every call answers with a promise. */
+        wxT("var callSeq=0,calls={};\n")
+        wxT("window.qspResolve=function(id,isOk,value,isNum){\n")
+        wxT("  var call=calls[id];\n")
+        wxT("  if(!call)return;\n")
+        wxT("  delete calls[id];\n")
+        wxT("  if(isOk)call.res(isNum?Number(value):value);else call.rej(new Error(value));\n")
+        wxT("};\n")
+        wxT("function hostCall(op,args){\n")
+        wxT("  return new Promise(function(res,rej){\n")
+        wxT("    var id=++callSeq,parts=['C'+id,op],i,a;\n")
+        wxT("    for(i=0;i<args.length;i++){\n")
+        wxT("      a=args[i];\n")
+        wxT("      parts.push(encodeURIComponent(a===undefined||a===null?'':String(a)));\n")
+        wxT("    }\n")
+        wxT("    calls[id]={res:res,rej:rej};\n")
+        /* Never leave a promise pending because the channel was not there. */
+        wxT("    if(!qspPost(parts.join('|'))){\n")
+        wxT("      delete calls[id];\n")
+        wxT("      rej(new Error('QSP host is unavailable'));\n")
+        wxT("    }\n")
+        wxT("  });\n")
+        wxT("}\n")
+        wxT("window.qsp={\n")
+        /* 'main' or 'vars': the panes are separate documents and the game's JS
+           runs in both, so this is how a script tells which one it is in. */
+        wxT("  pane:'main',\n")
+        wxT("  exec:function(code){return hostCall('exec',[code]);},\n")
+        wxT("  eval:function(expr){return hostCall('eval',[expr]);},\n")
+        wxT("  evalNum:function(expr){return hostCall('evalnum',[expr]);},\n")
+        wxT("  execLoc:function(name){return hostCall('loc',[name]);},\n")
+        wxT("  getVar:function(name,index){")
+        wxT("return hostCall('get',[name,index===undefined?0:index]);},\n")
+        /* setVar(name, value) writes item 0; setVar(name, index, value) writes
+           the item at a number or a string key, exactly like $name[index]. */
+        wxT("  setVar:function(name,a,b){\n")
+        wxT("    return arguments.length<3?hostCall('set',[name,0,a])")
+        wxT(":hostCall('set',[name,a,b]);\n")
+        wxT("  },\n")
+        wxT("  addVar:function(name,value){return hostCall('add',[name,value]);},\n")
+        wxT("  getVarSize:function(name){return hostCall('size',[name]);},\n")
+        wxT("  indexOf:function(name,key){return hostCall('index',[name,key]);},\n")
+        wxT("  onRefresh:function(fn){if(typeof fn==='function')refreshHooks.push(fn);},\n")
+        wxT("  offRefresh:function(fn){\n")
+        wxT("    var i=refreshHooks.indexOf(fn);\n")
+        wxT("    if(i>=0)refreshHooks.splice(i,1);\n")
+        wxT("  }\n")
+        wxT("};\n")
+        wxT("window.qspSetPane=function(name){window.qsp.pane=name;};\n")
         /* Links are reported with their *raw* attribute so the host keeps the
            classic player's semantics for "#anchor" and "EXEC:" untouched. */
         wxT("document.addEventListener('click',function(e){\n")
@@ -295,6 +520,11 @@ void QSPWebTextBox::WriteShellFile()
         /* Keys pressed inside the browser never reach wxWidgets, so the action
            hotkeys (1-9, space) and fullscreen escape would be dead here unless
            we hand them back to the frame ourselves. */
+        /* Without the Edge SDK the browser still owns F5, so the page swallows
+           it here - the frame gets it back below as a quick save. */
+        wxT("document.addEventListener('keydown',function(e){\n")
+        wxT("  if(e.keyCode===116)e.preventDefault();\n")
+        wxT("},false);\n")
         wxT("document.addEventListener('keyup',function(e){\n")
         wxT("  var code=e.keyCode;\n")
         wxT("  if(code>=96&&code<=105)code-=48;\n") // numpad digits -> plain digits
@@ -306,6 +536,8 @@ void QSPWebTextBox::WriteShellFile()
         wxT("})();\n")
         wxT("</script></body></html>\n");
 
+    wxString shell;
+    shell << shellDocument << shellCore << shellAssets << shellBridge;
     m_shellVersion = HashOf(shell);
 
     wxString path(GetShellPath());
@@ -320,6 +552,13 @@ void QSPWebTextBox::SetPathProvider(PathProvider *provider)
 {
     m_pathProvider = provider;
     SetupGameFolderAccess();
+}
+
+void QSPWebTextBox::SetPaneName(const wxString& name)
+{
+    if (m_paneName == name) return;
+    m_paneName = name;
+    RunScript(wxString::Format(wxT("qspSetPane(%s);"), ToJsString(m_paneName).wx_str()));
 }
 
 /* Point the document at the current game folder. On Edge this goes through a
@@ -424,6 +663,48 @@ wxString QSPWebTextBox::BuildUpdateScript() const
         ToJsString(text).wx_str(),
         m_toScroll ? wxT("true") : wxT("false"),
         BuildStyleObject().wx_str());
+}
+
+wxString QSPWebTextBox::BuildUserStylesScript() const
+{
+    return wxString::Format(wxT("qspSetStyles(%s,%s);"),
+        ToJsString(m_userCss).wx_str(),
+        ToJsArray(m_userCssFiles).wx_str());
+}
+
+wxString QSPWebTextBox::BuildUserScriptsScript() const
+{
+    return wxString::Format(wxT("qspSetScripts(%s,%s);"),
+        ToJsString(m_userJs).wx_str(),
+        ToJsArray(m_userJsFiles).wx_str());
+}
+
+/* The host always sends the whole current state and lets the document work out
+   whether anything changed, because a game folder switch reloads the shell and
+   any bookkeeping kept out here would then be one step ahead of the page. */
+void QSPWebTextBox::SetUserStyles(const wxString& inlineCss, const wxArrayString& files)
+{
+    if (m_userCss == inlineCss && m_userCssFiles == files) return;
+    m_userCss = inlineCss;
+    m_userCssFiles = files;
+    RunScript(BuildUserStylesScript());
+}
+
+void QSPWebTextBox::SetUserScripts(const wxString& inlineJs, const wxArrayString& files)
+{
+    if (m_userJs == inlineJs && m_userJsFiles == files) return;
+    m_userJs = inlineJs;
+    m_userJsFiles = files;
+    RunScript(BuildUserScriptsScript());
+}
+
+void QSPWebTextBox::ResolveScriptCall(long callId, bool isOk, const wxString& value, bool isNum)
+{
+    RunScript(wxString::Format(wxT("qspResolve(%ld,%s,%s,%s);"),
+        callId,
+        isOk ? wxT("true") : wxT("false"),
+        ToJsString(value).wx_str(),
+        isNum ? wxT("true") : wxT("false")));
 }
 
 /* Text, colours and font arrive one at a time during a refresh; collecting
@@ -578,6 +859,14 @@ void QSPWebTextBox::OnWebViewLoaded(wxWebViewEvent& event)
 
     if (!m_baseUrl.IsEmpty())
         RunScript(wxString::Format(wxT("qspSetBase(%s);"), ToJsString(m_baseUrl).wx_str()));
+    if (!m_paneName.IsEmpty())
+        RunScript(wxString::Format(wxT("qspSetPane(%s);"), ToJsString(m_paneName).wx_str()));
+
+    /* The document is new, so its own idea of what is already applied is
+       empty; hand it everything before the first content update so the game's
+       styles are in place by the time anything is painted. */
+    RunScript(BuildUserStylesScript());
+    RunScript(BuildUserScriptsScript());
 
     m_isUpdatePending = true;
     Flush();
@@ -615,6 +904,9 @@ void QSPWebTextBox::OnScriptMessage(wxWebViewEvent& event)
         wxString payload(message.Mid(1));
         if (!payload.BeforeFirst(wxT('|')).ToLong(&code)) return;
         payload.AfterFirst(wxT('|')).ToLong(&mods);
+        /* Browser key codes are wx key codes only by accident: the digits and
+           escape line up, the function keys don't. */
+        if (code >= 112 && code <= 123) code = WXK_F1 + (code - 112);
 
         wxKeyEvent keyEvent(wxEVT_KEY_UP);
         keyEvent.m_keyCode = code;
@@ -624,6 +916,28 @@ void QSPWebTextBox::OnScriptMessage(wxWebViewEvent& event)
         keyEvent.SetEventObject(this);
         keyEvent.SetId(GetId());
         GetParent()->GetEventHandler()->ProcessEvent(keyEvent);
+        return;
+    }
+    if (message[0] == wxT('C'))
+    {
+        /* "C<id>|<op>|<arg>|<arg>...", every argument percent-encoded so no
+           payload can ever contain the separator. */
+        wxArrayString parts(wxSplit(message.Mid(1), wxT('|'), (wxChar)0));
+        long callId = 0;
+        if (parts.GetCount() < 2 || !parts[0].ToLong(&callId)) return;
+
+        wxArrayString args;
+        for (size_t i = 2; i < parts.GetCount(); ++i)
+            args.Add(FromUriComponent(parts[i]));
+
+        QSPScriptCallEvent *callEvent = new QSPScriptCallEvent(wxEVT_QSP_SCRIPT_CALL, GetId());
+        callEvent->SetCallId(callId);
+        callEvent->SetOp(parts[1]);
+        callEvent->SetArgs(args);
+        callEvent->SetEventObject(this);
+        /* Queued, not sent: running engine code from inside the browser's own
+           message callback would re-enter the view while it is mid-dispatch. */
+        GetParent()->GetEventHandler()->QueueEvent(callEvent);
         return;
     }
     if (message[0] != wxT('L')) return;

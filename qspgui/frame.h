@@ -37,6 +37,9 @@
     #include "initevent.h"
     #include "pathprovider.h"
     #include "updateappdialog.h"
+    #include "toast.h"
+
+    class QSPDevServer;
 
     #include "qspgui_config.h"
 
@@ -62,6 +65,8 @@
         ID_OPENGAMESTAT,
         ID_SAVEGAMESTAT,
         ID_QUICKSAVE,
+        ID_QUICKSAVESLOT,
+        ID_QUICKLOADSLOT,
         ID_VOLUME,
         ID_VOLUME0,
         ID_VOLUME20,
@@ -127,9 +132,16 @@
         void AddMenuItem(const wxString &name, const wxString &imgPath);
         int ShowMenu();
         void UpdateGamePath(const wxString &fullPath);
+        void UpdateGameFile(const wxString &fullPath);
         wxString ComposeGamePath(const wxString &relativePath) const;
         bool IsValidFullPath(const wxString &path) const;
         wxString GetGamePath() const { return m_worldPath; }
+        wxString GetGameFilePath() const { return m_gameFilePath; }
+        bool IsGameOpened() const { return m_isGameOpened; }
+
+        /* Development API, off unless the player was started with --dev */
+        bool StartDevServer(unsigned short port, const wxString &token);
+        QSPDevServer *GetDevServer() const { return m_devServer; }
 
         // Accessors
         wxTimer *GetTimer() const { return m_timer; }
@@ -140,6 +152,11 @@
         QSPListBox *GetObjects() const { return m_objects; }
         QSPImgCanvas *GetImgView() const { return m_imgView; }
         wxMenu *GetGameMenu() const { return m_gameMenu; }
+        /* Saving is up to the game: NOSAVE switches it off, which the game
+           menu already reflects, so the hotkeys ask the menu rather than
+           reading the variable a second time. */
+        bool CanSaveGame() const { return m_gameMenu->IsEnabled(ID_SAVEGAMESTAT); }
+        void ShowToast(const wxString &text, QSPToastKind kind = QSP_TOAST_INFO);
         bool ToShowHotkeys() const { return m_toShowHotkeys; }
         bool ToCheckUpdates() const { return m_toCheckUpdates; }
         bool ToQuit() const { return m_toQuit; }
@@ -163,8 +180,14 @@
         void TogglePane(wxWindowID id);
         void SetOverallVolume(int percents);
         void OpenGameFile(const wxString& fullPath);
-        void OpenGameState(const wxString& fullPath);
-        void SaveGameState(const wxString& fullPath);
+        bool OpenGameState(const wxString& fullPath);
+        /* toRemember keeps the file as the target of the Ctrl-S quicksave;
+           the F5 slot is saved without it, so it can't silently take over
+           the file the player picked themselves. */
+        bool SaveGameState(const wxString& fullPath, bool toRemember = true);
+        wxString GetQuickSavePath() const;
+        void QuickSaveToSlot();
+        void QuickLoadFromSlot();
 
         // Events
         void OnVersionRequestState(wxWebRequestEvent& event);
@@ -178,6 +201,8 @@
         void OnOpenGameStat(wxCommandEvent& event);
         void OnSaveGameStat(wxCommandEvent& event);
         void OnQuickSave(wxCommandEvent& event);
+        void OnQuickSaveSlot(wxCommandEvent& event);
+        void OnQuickLoadSlot(wxCommandEvent& event);
         void OnSelectFont(wxCommandEvent& event);
         void OnUseFontSize(wxCommandEvent& event);
         void OnSelectFontColor(wxCommandEvent& event);
@@ -196,6 +221,11 @@
         void OnCheckUpdates(wxCommandEvent& event);
         void OnAbout(wxCommandEvent& event);
         void OnLinkClicked(wxHtmlLinkEvent& event);
+    #ifdef QSPGUI_USE_WEBVIEW
+        /* A call the game's JS made through window.qsp. It lives here rather
+           than in the pane because this is where the engine is driven from. */
+        void OnScriptCall(QSPScriptCallEvent& event);
+    #endif
         void OnObjectChange(wxCommandEvent& event);
         void OnActionChange(wxCommandEvent& event);
         void OnActionDblClick(wxCommandEvent& event);
@@ -210,7 +240,9 @@
         // Fields
         bool m_isGameOpened;
         wxString m_worldPath;
+        wxString m_gameFilePath;
         wxString m_savedGamePath;
+        QSPDevServer *m_devServer;
         wxString m_configPath;
         wxString m_configDefPath;
         QSPTranslationHelper *m_transHelper;
@@ -227,6 +259,7 @@
         wxMenu *m_fileMenu;
         wxMenu *m_settingsMenu;
         wxAuiManager *m_manager;
+        QSPToast *m_toast;
         bool m_isManagerUpdatePending;
         wxColour m_backColor;
         wxColour m_linkColor;

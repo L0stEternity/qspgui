@@ -20,6 +20,7 @@
 
     #include <wx/wx.h>
     #include <wx/fontmap.h>
+    #include <wx/arrstr.h>
     #include <wx/html/htmlwin.h>
     #include "pathprovider.h"
 
@@ -44,6 +45,14 @@
            batch. Present so both renderers share an interface. */
         void BeginUpdate() {}
         void EndUpdate() {}
+        /* Game-supplied CSS and JS need a real browser engine, so the classic
+           renderer just ignores them. Present so both renderers share an
+           interface. */
+        void SetUserStyles(const wxString& WXUNUSED(inlineCss),
+                           const wxArrayString& WXUNUSED(files)) {}
+        void SetUserScripts(const wxString& WXUNUSED(inlineJs),
+                            const wxArrayString& WXUNUSED(files)) {}
+        void SetPaneName(const wxString& WXUNUSED(name)) {}
         void SetTextFont(const wxFont& font);
         wxFont GetTextFont() const { return m_font; }
         wxString GetText() const { return m_text; }

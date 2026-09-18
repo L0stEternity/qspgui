@@ -328,3 +328,24 @@ msgstr "Праверыць наяўнасць апошняй версіі"
 
 msgid "Check for updates on startup"
 msgstr "Правяраць абнаўленні падчас запуску"
+
+msgid "Quick save &slot\tF5"
+msgstr "Хуткае захаванне ў &слот\tF5"
+
+msgid "Load quick save s&lot\tF9"
+msgstr "Загрузіць хуткае захаванне са с&лота\tF9"
+
+msgid "Quick saved"
+msgstr "Хуткае захаванне выканана"
+
+msgid "Quick save loaded"
+msgstr "Хуткае захаванне загружана"
+
+msgid "No quick save for this game yet"
+msgstr "Для гэтай гульні яшчэ няма хуткага захавання"
+
+msgid "This game doesn't allow saving"
+msgstr "Гэтая гульня не дазваляе захаванне"
+
+msgid "Couldn't write the quick save"
+msgstr "Не ўдалося запісаць хуткае захаванне"

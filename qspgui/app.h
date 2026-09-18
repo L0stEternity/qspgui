@@ -25,6 +25,9 @@
     #include "callbacks_gui.h"
     #include "transhelper.h"
 
+    /* Default loopback port of the development API (see devserver.h) */
+    #define QSP_DEV_DEFAULTPORT 4747
+
     class QSPApp : public wxApp
     {
     public:
@@ -39,6 +42,9 @@
         // Fields
         QSPTranslationHelper *m_transHelper;
         wxString m_gameFile;
+        bool m_isDevMode = false;
+        unsigned short m_devPort = QSP_DEV_DEFAULTPORT;
+        wxString m_devToken;
     };
 
 #endif

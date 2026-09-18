@@ -20,7 +20,48 @@
 
     #include <wx/wx.h>
     #include <wx/webview.h>
+    #include <wx/arrstr.h>
     #include "pathprovider.h"
+
+    class QSPWebTextBox;
+
+    /* One call from the game's JS into the engine.
+
+       The pane itself knows nothing about QSP: it queues one of these to its
+       parent, which owns the engine, and the answer travels back through
+       ResolveScriptCall(). Queued rather than sent, so the engine is never
+       entered from inside the browser's own message callback. */
+    class QSPScriptCallEvent : public wxCommandEvent
+    {
+    public:
+        QSPScriptCallEvent(wxEventType type = wxEVT_NULL, wxWindowID id = 0)
+            : wxCommandEvent(type, id), m_callId(0) {}
+        QSPScriptCallEvent(const QSPScriptCallEvent& event)
+            : wxCommandEvent(event), m_callId(event.m_callId),
+              m_op(event.m_op), m_args(event.m_args) {}
+
+        virtual wxEvent *Clone() const { return new QSPScriptCallEvent(*this); }
+
+        void SetCallId(long callId) { m_callId = callId; }
+        long GetCallId() const { return m_callId; }
+        void SetOp(const wxString& op) { m_op = op; }
+        const wxString& GetOp() const { return m_op; }
+        void SetArgs(const wxArrayString& args) { m_args = args; }
+        /* Missing arguments read as empty rather than throwing: the caller is
+           the game's own JS and may pass fewer than an operation expects. */
+        wxString GetArg(size_t index) const
+        {
+            return (index < m_args.GetCount() ? m_args[index] : wxString());
+        }
+        size_t GetArgsCount() const { return m_args.GetCount(); }
+
+    private:
+        long m_callId;
+        wxString m_op;
+        wxArrayString m_args;
+    };
+
+    wxDECLARE_EVENT(wxEVT_QSP_SCRIPT_CALL, QSPScriptCallEvent);
 
     /* Drop-in replacement for QSPTextBox backed by a real browser engine
        (WebView2 on Windows, WebKitGTK on Linux, WKWebView on macOS).
@@ -45,8 +86,16 @@
         void LoadBackImage(const wxString& imagePath);
         void SetPathProvider(PathProvider *provider);
         void LoadPage(const wxString& location);
+        /* Game-supplied CSS and JS. Both are declarative: the pane holds the
+           current value and re-applies it whenever the document is rebuilt, so
+           a game only has to set the variables once. */
+        void SetUserStyles(const wxString& inlineCss, const wxArrayString& files);
+        void SetUserScripts(const wxString& inlineJs, const wxArrayString& files);
+        /* Answer a call the game's JS made through window.qsp. */
+        void ResolveScriptCall(long callId, bool isOk, const wxString& value, bool isNum);
 
         // Accessors
+        void SetPaneName(const wxString& name);
         void SetIsHtml(bool isHtml);
         void SetText(const wxString& text, bool toScroll = false);
         /* A single refresh touches the pane repeatedly - text, colours, font,
@@ -71,6 +120,8 @@
         void Flush();
         wxString BuildUpdateScript() const;
         wxString BuildStyleObject() const;
+        wxString BuildUserStylesScript() const;
+        wxString BuildUserScriptsScript() const;
         void RunScript(const wxString& script);
         void SetupGameFolderAccess();
         bool SetupShellHost();
@@ -105,6 +156,11 @@
         wxColour m_fontColor;
         wxString m_gameDir;
         wxString m_baseUrl;
+        wxString m_paneName;
+        wxString m_userCss;
+        wxArrayString m_userCssFiles;
+        wxString m_userJs;
+        wxArrayString m_userJsFiles;
     };
 
 #endif

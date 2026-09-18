@@ -328,3 +328,24 @@ msgstr "Kontroli ĉu estas la plej nova versio"
 
 msgid "Check for updates on startup"
 msgstr "Kontroli ĝisdatigojn dum la starto"
+
+msgid "Quick save &slot\tF5"
+msgstr "Rapida savo en &fakon\tF5"
+
+msgid "Load quick save s&lot\tF9"
+msgstr "Ŝargi rapidan savon el &fako\tF9"
+
+msgid "Quick saved"
+msgstr "Rapide savita"
+
+msgid "Quick save loaded"
+msgstr "Rapida savo ŝargita"
+
+msgid "No quick save for this game yet"
+msgstr "Ankoraŭ ne estas rapida savo por ĉi tiu ludo"
+
+msgid "This game doesn't allow saving"
+msgstr "Ĉi tiu ludo ne permesas savi"
+
+msgid "Couldn't write the quick save"
+msgstr "Ne eblis skribi la rapidan savon"

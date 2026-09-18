@@ -16,7 +16,36 @@
 */
 
 #include "callbacks_gui.h"
+#include "devserver.h"
 #include "comtools.h"
+
+namespace
+{
+    /* Read a string variable a game may also fill as an array: $USERJSFILE on
+       its own is one script, $USERJSFILE[0], [1], ... is a list of them. Empty
+       items are dropped so a game can clear one without shifting the rest. */
+    void qspGetStringList(QSPString name, wxArrayString& items)
+    {
+        int i, count = 0;
+        QSPString value;
+        items.Empty();
+        if (!QSPGetVarValuesCount(name, &count)) return;
+        for (i = 0; i < count; ++i)
+        {
+            if (QSPGetStrVarValue(name, i, &value) && !qspIsEmpty(value))
+                items.Add(qspToWxString(value));
+        }
+    }
+
+    /* Same variables, but as one blob: several items are simply stacked, which
+       lets a game build up its CSS or JS from pieces. */
+    wxString qspGetStringBlob(QSPString name)
+    {
+        wxArrayString items;
+        qspGetStringList(name, items);
+        return wxJoin(items, wxT('\n'), (wxChar)0);
+    }
+}
 
 QSPFrame *QSPCallbacks::m_frame;
 bool QSPCallbacks::m_isHtml;
@@ -84,6 +113,8 @@ int QSPCallbacks::SetTimer(int msecs)
 
 int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
 {
+    /* A forced refresh yields to the event loop with game code still running */
+    QSPDev::EngineScope engineScope;
     int changedState;
     QSP_BIGINT numVal;
     QSPString strVal;
@@ -147,6 +178,23 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     else
         m_frame->GetDesc()->LoadBackImage(wxEmptyString);
     // -------------------------------
+    /* Game-supplied CSS and JS, read here exactly like $BACKIMAGE above, so
+       the variables are the whole interface and a game never has to know which
+       renderer it is running under. The two description panes are separate
+       documents: both get the styles, and both run the scripts - a script
+       tells them apart through qsp.pane. */
+    {
+        wxString userCss(qspGetStringBlob(QSP_STATIC_STR(QSP_FMT("USERCSS"))));
+        wxString userJs(qspGetStringBlob(QSP_STATIC_STR(QSP_FMT("USERJS"))));
+        wxArrayString cssFiles, jsFiles;
+        qspGetStringList(QSP_STATIC_STR(QSP_FMT("USERCSSFILE")), cssFiles);
+        qspGetStringList(QSP_STATIC_STR(QSP_FMT("USERJSFILE")), jsFiles);
+        m_frame->GetDesc()->SetUserStyles(userCss, cssFiles);
+        m_frame->GetVars()->SetUserStyles(userCss, cssFiles);
+        m_frame->GetDesc()->SetUserScripts(userJs, jsFiles);
+        m_frame->GetVars()->SetUserScripts(userJs, jsFiles);
+    }
+    // -------------------------------
     m_frame->ApplyParams();
     /* Everything is settled, so apply it now rather than at scope exit: the
        forced branch below paints and pumps the loop, and must not show the
@@ -163,6 +211,8 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     }
     m_frame->GetGameMenu()->Enable(ID_SAVEGAMESTAT, canSave);
     m_frame->GetGameMenu()->Enable(ID_QUICKSAVE, canSave);
+    m_frame->GetGameMenu()->Enable(ID_QUICKSAVESLOT, canSave);
+    if (m_frame->GetDevServer()) m_frame->GetDevServer()->NotifyRefreshed(isNewDesc != QSP_FALSE);
     return 0;
 }
 
@@ -235,9 +285,12 @@ int QSPCallbacks::ShowPane(int type, QSP_BOOL toShow)
 
 int QSPCallbacks::Sleep(int msecs)
 {
+    /* Yields to the event loop with game code still running */
+    QSPDev::EngineScope engineScope;
     if (m_frame->ToQuit()) return 0;
     bool canSaveGame = m_frame->GetGameMenu()->IsEnabled(ID_SAVEGAMESTAT);
     bool canQuicksave = m_frame->GetGameMenu()->IsEnabled(ID_QUICKSAVE);
+    bool canQuicksaveSlot = m_frame->GetGameMenu()->IsEnabled(ID_QUICKSAVESLOT);
     bool toBreak = false;
     m_frame->EnableControls(false, true);
     int i, count = msecs / 50;
@@ -262,6 +315,7 @@ int QSPCallbacks::Sleep(int msecs)
     m_frame->EnableControls(true, true);
     m_frame->GetGameMenu()->Enable(ID_SAVEGAMESTAT, canSaveGame);
     m_frame->GetGameMenu()->Enable(ID_QUICKSAVE, canQuicksave);
+    m_frame->GetGameMenu()->Enable(ID_QUICKSAVESLOT, canQuicksaveSlot);
     return 0;
 }
 
@@ -275,6 +329,8 @@ int QSPCallbacks::GetMSCount()
 
 int QSPCallbacks::Msg(QSPString str)
 {
+    /* Yields to the event loop with game code still running */
+    QSPDev::EngineScope engineScope;
     if (m_frame->ToQuit()) return 0;
     QSPMsgDlg dialog(m_frame,
         wxID_ANY,
@@ -286,6 +342,7 @@ int QSPCallbacks::Msg(QSPString str)
         m_isHtml,
         m_frame
     );
+    if (m_frame->GetDevServer()) m_frame->GetDevServer()->NotifyMessage(qspToWxString(str));
     m_frame->EnableControls(false);
     dialog.ShowModal();
     m_frame->EnableControls(true);
@@ -294,6 +351,8 @@ int QSPCallbacks::Msg(QSPString str)
 
 int QSPCallbacks::ShowMenu(QSPListItem *items, int count)
 {
+    /* Yields to the event loop with game code still running */
+    QSPDev::EngineScope engineScope;
     if (m_frame->ToQuit()) return -1;
     m_frame->EnableControls(false);
     m_frame->DeleteMenu();
@@ -306,6 +365,8 @@ int QSPCallbacks::ShowMenu(QSPListItem *items, int count)
 
 int QSPCallbacks::Input(QSPString text, QSP_CHAR *buffer, int maxLen)
 {
+    /* Yields to the event loop with game code still running */
+    QSPDev::EngineScope engineScope;
     if (m_frame->ToQuit()) return 0;
     QSPInputDlg dialog(m_frame,
         wxID_ANY,

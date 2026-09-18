@@ -328,3 +328,24 @@ msgstr "Check for latest version"
 
 msgid "Check for updates on startup"
 msgstr "Check for updates on startup"
+
+msgid "Quick save &slot\tF5"
+msgstr "Quick save &slot\tF5"
+
+msgid "Load quick save s&lot\tF9"
+msgstr "Load quick save s&lot\tF9"
+
+msgid "Quick saved"
+msgstr "Quick saved"
+
+msgid "Quick save loaded"
+msgstr "Quick save loaded"
+
+msgid "No quick save for this game yet"
+msgstr "No quick save for this game yet"
+
+msgid "This game doesn't allow saving"
+msgstr "This game doesn't allow saving"
+
+msgid "Couldn't write the quick save"
+msgstr "Couldn't write the quick save"

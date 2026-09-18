@@ -328,3 +328,24 @@ msgstr "Nach neuester Version suchen"
 
 msgid "Check for updates on startup"
 msgstr "Beim Start nach Updates suchen"
+
+msgid "Quick save &slot\tF5"
+msgstr "Schnellspeicher-&Slot\tF5"
+
+msgid "Load quick save s&lot\tF9"
+msgstr "Schnellspeicher-S&lot laden\tF9"
+
+msgid "Quick saved"
+msgstr "Schnell gespeichert"
+
+msgid "Quick save loaded"
+msgstr "Schnellspeicherung geladen"
+
+msgid "No quick save for this game yet"
+msgstr "Für dieses Spiel gibt es noch keine Schnellspeicherung"
+
+msgid "This game doesn't allow saving"
+msgstr "Dieses Spiel erlaubt kein Speichern"
+
+msgid "Couldn't write the quick save"
+msgstr "Schnellspeicherung konnte nicht geschrieben werden"

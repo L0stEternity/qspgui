@@ -17,6 +17,7 @@
 
 #include "app.h"
 #include "comtools.h"
+#include "devserver.h"
 
 wxIMPLEMENT_APP(QSPApp);
 
@@ -50,6 +51,16 @@ void QSPApp::OnInitCmdLine(wxCmdLineParser &parser)
     parser.AddParam("game file",
                     wxCMD_LINE_VAL_STRING,
                     wxCMD_LINE_PARAM_OPTIONAL);
+    parser.AddLongSwitch("dev",
+                         "expose the development API on a loopback port");
+    parser.AddLongOption("dev-port",
+                         "port for the development API (default 4747)",
+                         wxCMD_LINE_VAL_NUMBER,
+                         wxCMD_LINE_PARAM_OPTIONAL);
+    parser.AddLongOption("dev-token",
+                         "require this token before accepting development commands",
+                         wxCMD_LINE_VAL_STRING,
+                         wxCMD_LINE_PARAM_OPTIONAL);
 }
 
 bool QSPApp::OnCmdLineParsed(wxCmdLineParser &parser)
@@ -59,6 +70,15 @@ bool QSPApp::OnCmdLineParsed(wxCmdLineParser &parser)
 
     if (parser.GetParamCount() > 0)
         m_gameFile = parser.GetParam();
+
+    m_isDevMode = parser.Found("dev");
+    long devPort;
+    if (parser.Found("dev-port", &devPort))
+    {
+        m_devPort = (unsigned short)devPort;
+        m_isDevMode = true;
+    }
+    parser.Found("dev-token", &m_devToken);
     return true;
 }
 
@@ -74,6 +94,16 @@ void QSPApp::InitUI()
     // ----------------------
     QSPFrame * frame = new QSPFrame(configPath, m_transHelper);
     QSPCallbacks::Init(frame);
+    if (m_isDevMode)
+    {
+        /* Printed so that an editor launching the player can pick the port up
+           from its output instead of guessing. */
+        if (frame->StartDevServer(m_devPort, m_devToken))
+            wxPrintf(wxT("qspgui: development API listening on 127.0.0.1:%u\n"), frame->GetDevServer()->GetPort());
+        else
+            wxLogError(wxT("Cannot start the development API on port %u"), m_devPort);
+        fflush(stdout);
+    }
     frame->LoadSettings(); // load settings after initialization to properly restore everything
     frame->EnableControls(false);
     // ----------------------
