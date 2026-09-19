@@ -106,6 +106,43 @@ media formats and CSS. The classic renderer remains the default and is unchanged
     `callbacks_gui.cpp` marks those windows.
   - `qspgui/devserver.{h,cpp}` — new `QSPDevServer`, plus a small JSON reader
     and writer, since wxWidgets ships neither.
+- **A profiler and a live performance monitor in the development API**, so
+  "the game feels slow" becomes a line number. See [DEVAPI.md](DEVAPI.md).
+  - `profile` reuses the engine's per-line debug callback for timing rather
+    than for tracing: the interval between two calls is the time the engine
+    spent on the line the first one reported, which makes it an exact
+    measurement per line rather than a statistical sample. It reports self,
+    inclusive and wait time per location, per-line hits with the worst single
+    execution, and the call graph as caller/callee edges — a flame graph, a
+    heat map over the source and a hot-lines table all come out of one report.
+  - The call graph is inferred. `QSPGetCurStateData` reports where the engine
+    is, never how it got there, so a line from a location already on the
+    inferred stack is treated as a return to it and anything else as a call.
+    Exact for the `GOTO` and `GOSUB` chains a game is made of; a location that
+    recurses into itself is counted as one frame rather than as nested ones.
+  - Time spent waiting on the player — `MSG`, `INPUT`, `SLEEP`, a held
+    breakpoint — is reported separately from time spent interpreting, because
+    a game is not slow for having asked a question.
+  - The player times its own work too (`qspgui/devprofile.{h,cpp}`), which is
+    the half a line profiler cannot see: each refresh, each description and
+    list pane rebuilt, each script handed to a browser pane, each image, sound,
+    dialog and save, with the number of bytes moved where that is what explains
+    the cost. The counters are compile-time ids in a fixed table and cost a
+    branch while a profile is running, nothing otherwise.
+  - `monitor` pushes a `perf` sample on a timer — lines per second, the share
+    of the window spent inside the interpreter, resident memory, and the
+    counters for that window — so an editor can graph a session live. It runs
+    off a timer rather than the idle handler, so samples keep arriving while
+    the game sits still, and it does not install the per-line hook, so it is
+    cheap enough to leave on for a whole session.
+  - Both are answered while the game is held at a breakpoint, reading counters
+    being something that cannot call into the interpreter. Starting or stopping
+    the profiler there is refused rather than installing the debug hook from
+    inside the debug hook.
+  - `QSPJsonBuilder` grew `MemberDouble` and `MemberInt64`. Timings are written
+    with the decimal point JSON requires whatever the C locale has to say about
+    it — under a European locale `0,010` is two values, not one — and hit
+    counts are 64-bit, a single runaway loop being enough to pass 2^31.
 - **Quick save and quick load on F5 / F9**, as two new entries in the Game menu.
   The slot sits next to the game file as `<game>_quick.sav`, one per game, and is
   kept apart from the Ctrl-S quicksave so it can't take over the file the player
@@ -116,10 +153,13 @@ media formats and CSS. The classic renderer remains the default and is unchanged
     pane, which is also where the browser's own shortcuts are turned off - F5
     would otherwise reload the shell out from under the game.
 
-- **Toast notifications** (`qspgui/toast.{h,cpp}` — new `QSPToast`), used by quick
+- **Status messages** (`qspgui/toast.{h,cpp}` — new `QSPToast`), used by quick
   save and quick load for the kind of status a modal dialog has no business
-  interrupting play for. A floating frame rather than a child window, because the
-  browser pane would paint over anything put on top of it.
+  interrupting play for. A tooltip-sized panel with a chiselled border and a
+  hand-drawn symbol, in the bottom right corner of the window, painted in the
+  theme's colours — no rounded corners, no accent bar and no fading, which is
+  not what this player looks like. A floating frame rather than a child window,
+  because the browser pane would paint over anything put on top of it.
 
 - **The action list, the object list and the image pane render in the browser
   engine too** (`qspgui/weblistbox.{h,cpp}` — new `QSPWebListBox`;
@@ -202,17 +242,28 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   itself, next to the executable, since an editor driving the player is exactly
   when the detail is wanted. The file is truncated past 4 MB rather than rotated.
 
-- **Following the desktop's light / dark theme.** A new "Follow system light /
-  dark theme" item under Colors, on by default for a fresh config and cleared
-  the moment a colour is picked by hand — an explicit choice is not something to
-  quietly overwrite. The palette is re-applied when the desktop switches while
-  the player is running, and `MSWEnableDarkMode` themes the parts the player
-  does not paint itself: the menu bar, the AUI captions, the scrollbars and the
-  common dialogs. A game's `$BCOLOR` / `$FCOLOR` / `$LCOLOR` still win over all
-  of it — these are only the player's own defaults.
+- **A light / dark theme for the player's own frame**, as a radio group under
+  Colors: "Follow system light / dark theme", "Light theme", "Dark theme". A
+  fresh config follows the desktop, so the player matches everything else on
+  screen, and either theme can be picked instead — which is what the first
+  version of this was missing, since it only ever followed the desktop and had
+  no way back.
+
+  The theme is the frame and nothing else: the pane captions, the sashes, the
+  border, the menus, the dropdowns, the scrollbars and the common dialogs. The
+  page, the text and the links stay exactly where they were — they belong to the
+  game's `$BCOLOR` / `$FCOLOR` / `$LCOLOR` and to the three colour settings above
+  it, and the theme does not touch them.
+
+  The captions follow the moment the theme is picked, because wxAUI draws those
+  and we own its colours. The menus and the dialogs are Windows' own, and
+  wxWidgets can only choose light or dark for them before the first window
+  exists — so the setting is read straight out of the config file at startup
+  (`QSPApp::ApplyStoredAppearance`), and a switch while the player is running
+  says so in a toast rather than leaving it as a surprise.
 
 - **Unit tests** (`tests/`), built with `-DQSPGUI_BUILD_TESTS=ON` and run through
-  `ctest`. 45 cases over the pieces that are parsers or boundary checks, which is
+  `ctest`. 51 cases over the pieces that are parsers or boundary checks, which is
   exactly the code that should not be verified by running the player and looking
   at it:
   - `QSPCode` — the escaping that turns outside input into a line of QSP the
@@ -221,6 +272,8 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   - `QSPJsonReader` / `QSPJsonBuilder` — a hand-written parser sitting on a
     socket, including malformed input and braces inside strings.
   - `QSPPaths` — the containment that keeps a game inside its own folder.
+  - `QSPDockLayout` — the perspective rewrite that keeps each dock at the same
+    share of the window.
   - `QSPFileIO` and `QSPSaveSlots`.
   - The runner is in `tests/testing.{h,cpp}`: small enough not to be a
     dependency, and a failing check records itself rather than aborting, so one
@@ -307,6 +360,22 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   rather than one per caller.
 
 ### Fixed
+
+- **The panes changed shape every time the window did.** wxAUI gives a dock a
+  size in pixels and then leaves it there, so every pixel a resize adds goes to
+  the description in the middle: a layout set up on a small window turns into a
+  thin strip of actions and objects around a vast page on a large one, and the
+  proportions are different again at every size in between. The docks are now
+  given back the share of the window they had (`QSPDockLayout` in `comtools`,
+  driven from `QSPFrame::OnSize`), so what the player set up is what they keep at
+  any size, up to and including maximized.
+
+  The shares are remembered rather than recomputed from the pixels on every
+  step, because rounding to whole pixels through a slow drag would otherwise
+  walk the layout away from where it started; a dock whose size changed behind
+  our back — the sash was dragged — is measured again instead. The input row is
+  left out of it: it holds one line of text, and a line of text does not get
+  taller because the window did.
 
 - **Flashing on every action in real games.** `QSPFrame::ShowPane` froze and thawed
   the whole frame on entry, before deciding whether anything needed to change —

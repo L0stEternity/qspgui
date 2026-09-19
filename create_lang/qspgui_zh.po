@@ -353,6 +353,15 @@ msgstr "无法写入快速存档"
 msgid "Follow s&ystem light / dark theme"
 msgstr "跟随系统浅色 / 深色主题(&Y)"
 
+msgid "Li&ght theme"
+msgstr "浅色主题(&G)"
+
+msgid "Dar&k theme"
+msgstr "深色主题(&K)"
+
+msgid "Menus and dialogs follow when the player is restarted"
+msgstr "菜单和对话框将在重启播放器后随之更改"
+
 msgid "Save to slo&t"
 msgstr "保存到存档位(&T)"
 
@@ -376,3 +385,27 @@ msgstr "存档位 %d 为空"
 
 msgid "Loaded slot %d"
 msgstr "已读取存档位 %d"
+
+msgid "&Copy details"
+msgstr "复制详细信息(&C)"
+
+msgid "Copied"
+msgstr "已复制"
+
+msgid "Opening the game"
+msgstr "正在打开游戏"
+
+msgid "Unpacking the game world"
+msgstr "正在解包游戏世界"
+
+msgid "Starting the game"
+msgstr "正在启动游戏"
+
+msgid "Loading the saved game"
+msgstr "正在载入存档"
+
+msgid "Restoring the saved game"
+msgstr "正在恢复存档"
+
+msgid "Large games take a while to unpack - %d s so far"
+msgstr "大型游戏解包需要一些时间 — 已用 %d 秒"

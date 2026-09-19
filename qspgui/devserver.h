@@ -20,7 +20,9 @@
 
     #include <wx/wx.h>
     #include <wx/socket.h>
+    #include <wx/timer.h>
     #include "devjson.h"
+    #include "devprofile.h"
     #include <map>
     #include <set>
     #include <string>
@@ -117,6 +119,8 @@
         bool CmdBreak(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdPause(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdResume(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdProfile(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdMonitor(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
 
         /* Helpers */
         bool TakeSnapshot(std::vector<char> &snapshot, wxString &errorText);
@@ -142,6 +146,42 @@
         void SetTracing(bool isOn);
         void FlushTrace();
         void RecordTrace(const wxString &loc, int actIndex, int lineNum, const wxString &line);
+
+        /* Profiling.
+
+           Same debug callback as the trace, read for a different purpose: the
+           interval between two calls is the time the engine spent on the line
+           reported by the first one. That makes the hook a line-level sampling
+           profiler with an exact sample per line rather than a statistical
+           one - there is no line it can miss, only lines whose measured cost
+           is dominated by the measurement.
+
+           A sample is open from the callback that started a line to the one
+           that starts the next. Going idle closes it, because the gap between
+           a location finishing and the player's next event has nothing to do
+           with the last line it ran. */
+        void SetProfiling(bool isOn);
+        void ResetProfile();
+        /* Charges the open sample and opens one for the line just reported */
+        void ProfileLine(const wxString &loc, int lineNum, const wxString &line, double now);
+        /* Charges the open sample as of the given moment and closes it. isWait
+           marks the time as spent waiting on the player rather than on the
+           interpreter - a dialog, a SLEEP, a held breakpoint. */
+        void ChargeProfileSample(double now, bool isWait);
+        /* ... and unwinds the shadow stack with it, unless the engine is only
+           yielding, in which case those frames are still live. */
+        void CloseProfileSample(bool isWait);
+        void ProfileEnter(const wxString &loc, double now);
+        void ProfileLeaveTo(size_t depth, double now);
+        void AppendProfileReport(QSPJsonBuilder &result, const wxString &sort,
+                                 int limit, int lineLimit, bool withLines) const;
+
+        /* Live monitor: a rolling sample of the player's own counters, pushed
+           on a timer so a graph in an editor keeps moving even when the game
+           is sitting still. */
+        void SetMonitor(bool isOn, int intervalMs);
+        void OnMonitorTimer(wxTimerEvent &event);
+        void FlushMonitor();
 
         /* Breakpoints and stepping.
 
@@ -187,6 +227,41 @@
             int actIndex;
             int lineNum;
             wxString changes; /* raw JSON array, empty when nothing moved */
+        };
+
+        /* One source line's share of the run. Kept per location, keyed by the
+           line number, so the map is as big as the code that actually ran
+           rather than as long as the trace. */
+        struct LineProfile
+        {
+            long long hits;
+            double selfMs;
+            double maxMs;  /* worst single execution, which is what a hitch is */
+            double waitMs; /* time this line spent waiting on the player */
+            wxString line;
+
+            LineProfile() : hits(0), selfMs(0.0), maxMs(0.0), waitMs(0.0) {}
+        };
+
+        struct LocProfile
+        {
+            long long hits;   /* lines executed here */
+            long long calls;  /* times entered from somewhere else */
+            double selfMs;    /* time on this location's own lines */
+            double inclMs;    /* ... plus everything it called, see ProfileEnter */
+            double waitMs;    /* time its lines spent waiting on the player */
+            std::map<int, LineProfile> lines;
+
+            LocProfile() : hits(0), calls(0), selfMs(0.0), inclMs(0.0), waitMs(0.0) {}
+        };
+
+        /* The engine exposes no call stack - QSPGetCurStateData reports where
+           it is, not how it got there - so one is inferred from the sequence
+           of locations the lines come from. See ProfileEnter. */
+        struct ProfFrame
+        {
+            wxString loc;
+            double enteredMs;
         };
 
         /* Last seen values of a watched variable, as displayable strings.
@@ -236,6 +311,41 @@
         int m_traceLimit;
         int m_traceDropped;
         std::vector<TraceEvent> m_traceEvents;
+
+        bool m_profiling;
+        bool m_profLines;    /* keep the text of each line, not just its number */
+        int m_profMaxLines;  /* distinct lines kept per location */
+        double m_profStartMs;
+        double m_profStopMs;
+        long long m_profSamples;  /* lines charged */
+        long long m_profDropped;  /* line records the per-location cap turned away */
+        double m_profSelfMs;
+        double m_profWaitMs;
+        std::map<wxString, LocProfile> m_profLocs;
+        /* "CALLER>CALLEE" -> times taken, which is the call graph an editor
+           needs to draw anything shaped like a flame graph */
+        std::map<wxString, long long> m_profEdges;
+        std::vector<ProfFrame> m_profStack;
+        /* Recursion depth per location, so an inclusive time is added once per
+           outermost frame instead of once per level */
+        std::map<wxString, int> m_profDepth;
+        bool m_profOpen;
+        double m_profSampleStart;
+        /* What the open sample will be charged to. Map nodes do not move when
+           the map grows, so the records are found once when the line starts
+           rather than looked up again when it ends. Null while no sample is
+           open, or for a line the per-location cap turned away. */
+        LocProfile *m_profSampleLoc;
+        LineProfile *m_profSampleLineRec;
+
+        bool m_monitorOn;
+        int m_monitorIntervalMs;
+        wxTimer m_monitorTimer;
+        double m_monitorLastMs;
+        long long m_monitorLastSamples;
+        double m_monitorLastSelfMs;
+        double m_monitorLastWaitMs;
+        QSPDev::ProfCounterData m_monitorLast[QSPDev::Prof_CounterCount];
 
         /* "LOCNAME:line", with line 0 meaning any line in that location */
         std::set<wxString> m_breakpoints;

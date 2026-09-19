@@ -23,6 +23,8 @@
 #include "testing.h"
 #include "../qspgui/devjson.h"
 
+#include <locale.h>
+
 QSP_TEST(reader_takes_the_shape_the_protocol_uses)
 {
     QSPJsonReader reader;
@@ -157,4 +159,53 @@ QSP_TEST(builder_round_trips_an_error_message_with_quotes_in_it)
     QSPJsonReader reader;
     QSP_CHECK_BOOL(reader.Parse(builder.GetText()), true);
     QSP_CHECK_STR(reader.GetString(wxT("message")), message);
+}
+
+QSP_TEST(builder_writes_numbers_that_do_not_depend_on_the_locale)
+{
+    /* Profiler timings go out as doubles, and half of Europe's C locale writes
+       0,010 - which JSON reads as two values, not one. The separator has to be
+       a point whatever the player happens to be running under. */
+    const char *locales[] = { "de-DE", "de_DE.UTF-8", "ru-RU", "ru_RU.UTF-8", 0 };
+    const char *previous = setlocale(LC_NUMERIC, 0);
+    wxString saved(previous ? wxString::FromUTF8(previous) : wxString());
+    bool isSet = false;
+    for (int i = 0; locales[i] && !isSet; ++i)
+        isSet = (setlocale(LC_NUMERIC, locales[i]) != 0);
+
+    QSPJsonBuilder builder;
+    builder.StartObject();
+    builder.MemberDouble(wxT("selfMs"), 0.01);
+    builder.MemberDouble(wxT("pct"), 12.5, 1);
+    builder.MemberInt64(wxT("hits"), 5000000000LL);
+    builder.EndObject();
+    wxString text(builder.GetText());
+
+    if (isSet && !saved.IsEmpty()) setlocale(LC_NUMERIC, saved.utf8_str());
+
+    QSP_CHECK(!text.Contains(wxT(",0")));
+    QSP_CHECK(text.Contains(wxT("\"selfMs\":0.010")));
+    QSP_CHECK(text.Contains(wxT("\"pct\":12.5")));
+    QSP_CHECK(text.Contains(wxT("\"hits\":5000000000")));
+
+    QSPJsonReader reader;
+    QSP_CHECK_BOOL(reader.Parse(text), true);
+    QSP_CHECK_STR(reader.GetRaw(wxT("selfMs")), wxT("0.010"));
+}
+
+QSP_TEST(builder_writes_a_number_json_can_read_for_values_that_are_not_finite)
+{
+    /* No measurement produces one, but a rate is a division, and a division by
+       a window that has not moved would put "nan" on the wire. */
+    volatile double zero = 0.0;
+    double notANumber = zero / zero;
+
+    QSPJsonBuilder builder;
+    builder.StartObject();
+    builder.MemberDouble(wxT("busyPct"), notANumber);
+    builder.EndObject();
+
+    QSPJsonReader reader;
+    QSP_CHECK_BOOL(reader.Parse(builder.GetText()), true);
+    QSP_CHECK_STR(reader.GetRaw(wxT("busyPct")), wxT("null"));
 }

@@ -38,6 +38,14 @@
         virtual bool OnCmdLineParsed(wxCmdLineParser &parser);
     protected:
         void InitUI();
+        /* Where the settings file lives: next to the player when that folder
+           can be written to, in the user's config directory otherwise. */
+        wxString GetSettingsPath() const;
+        /* Light or dark for the parts Windows draws - the menus, the
+           dropdowns, the scrollbars, the window frame and the common dialogs.
+           Read from the settings file and applied before the first window
+           exists, because that is the only time wxWidgets can choose. */
+        void ApplyStoredAppearance();
         void SetupLogging();
         void CloseLogging();
         bool GetAutoRunEvent(wxInitEvent& initEvent);

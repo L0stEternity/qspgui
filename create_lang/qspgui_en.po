@@ -353,6 +353,15 @@ msgstr "Couldn't write the quick save"
 msgid "Follow s&ystem light / dark theme"
 msgstr "Follow s&ystem light / dark theme"
 
+msgid "Li&ght theme"
+msgstr "Li&ght theme"
+
+msgid "Dar&k theme"
+msgstr "Dar&k theme"
+
+msgid "Menus and dialogs follow when the player is restarted"
+msgstr "Menus and dialogs follow when the player is restarted"
+
 msgid "Save to slo&t"
 msgstr "Save to slo&t"
 
@@ -376,3 +385,27 @@ msgstr "Slot %d is empty"
 
 msgid "Loaded slot %d"
 msgstr "Loaded slot %d"
+
+msgid "&Copy details"
+msgstr "&Copy details"
+
+msgid "Copied"
+msgstr "Copied"
+
+msgid "Opening the game"
+msgstr "Opening the game"
+
+msgid "Unpacking the game world"
+msgstr "Unpacking the game world"
+
+msgid "Starting the game"
+msgstr "Starting the game"
+
+msgid "Loading the saved game"
+msgstr "Loading the saved game"
+
+msgid "Restoring the saved game"
+msgstr "Restoring the saved game"
+
+msgid "Large games take a while to unpack - %d s so far"
+msgstr "Large games take a while to unpack - %d s so far"

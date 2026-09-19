@@ -115,6 +115,8 @@ is a round trip through a save:
 | `setVars` | `vars[{name,value,index,append}]`, `refresh` | `ok`, `count`, `loc` |
 | `watch` | `names[]`, `reset` | `count`, `names[]` |
 | `trace` | `enabled`, `lines`, `vars`, `locs[]`, `limit` | `enabled`, `lines`, `vars`, `locs[]`, `limit` |
+| `profile` | `action` (`start`\|`stop`\|`reset`\|`report`\|`status`), `sort`, `limit`, `lineLimit`, `withLines`, `lines`, `maxLines` | `running`, `elapsedMs`, `lines`, `selfMs`, `waitMs`, `locations[]`, `edges[]`, `counters[]` |
+| `monitor` | `enabled`, `intervalMs` | `enabled`, `intervalMs`, `profiling` |
 | `break` | `action` (`set`\|`clear`\|`clearAll`\|`list`), `loc`, `line` | `breakpoints[{loc,line}]` |
 | `pause` | — | `pending`, `paused` |
 | `resume` | `mode` (`run`\|`step`\|`stepLoc`) | `ok`, `wasPaused`, `mode` |
@@ -294,6 +296,159 @@ Reading state from the hook is safe — a value lookup is a hash lookup and runs
 no game code — but nothing is *sent* from there. Events are queued and written
 once the interpreter is off the stack, for the same reason commands are.
 
+## Profiling
+
+`profile` answers the question a trace cannot: not *what ran*, but *what it cost*.
+
+```jsonc
+{"method":"profile","params":{"action":"start"}}
+// ... play, or drive the game through the API ...
+{"method":"profile","params":{"action":"stop","sort":"self","limit":20}}
+```
+
+```jsonc
+{"running":false,"elapsedMs":1272.104,"lines":21514,
+ "selfMs":9.664,"waitMs":0.0,"droppedLines":0,
+ "locationCount":5,"memoryKB":47312,
+ "locations":[
+   {"loc":"heavy","hits":20002,"calls":1,"selfMs":9.234,"inclMs":11.697,
+    "waitMs":0.0,"selfPct":95.55,"truncated":false,
+    "lines":[
+      {"lineNum":4,"hits":4000,"selfMs":3.687,"maxMs":0.040,"line":"$S = $S + '.'"},
+      {"lineNum":5,"hits":4000,"selfMs":1.904,"maxMs":0.001,"line":"TOTAL = TOTAL + J"}
+    ]},
+   {"loc":"inner","hits":1501,"calls":1,"selfMs":0.321,"inclMs":0.434,"selfPct":3.32}
+ ],
+ "edges":[{"from":"heavy","to":"inner","calls":1},
+          {"from":"start","to":"heavy","calls":1}],
+ "counters":[{"name":"refresh","count":4,"totalMs":0.1},
+             {"name":"varsDesc","count":1,"totalMs":0.04,"bytes":4012}]}
+```
+
+`action` is `start`, `stop`, `reset`, `report` or `status`. `report` is the
+default and can be asked for at any time, including while the profiler is still
+running — reading the numbers does not disturb them. `start` always begins a
+fresh run; `reset` zeroes the counters without stopping.
+
+| param | meaning |
+| --- | --- |
+| `sort` | `self` (default), `incl`, `wait`, `hits` or `calls` |
+| `limit` | locations returned, default 50, `0` for all |
+| `lineLimit` | lines returned per location, default 50, `0` for all |
+| `withLines` | `false` returns `lineCount` per location instead of the lines |
+| `lines` | on `start`: keep the text of each line, not just its number |
+| `maxLines` | on `start`: distinct lines recorded per location, default 4000 |
+
+### How the timing is taken
+
+The engine's debug callback fires once per executed line. The interval between
+two of them is the time the engine spent on the line the first one reported, so
+the hook is a profiler with an exact measurement per line rather than a
+statistical sample — there is no line it can miss.
+
+The two clock reads that bracket a line are taken at the very start and the
+very end of the callback, so the profiler's own bookkeeping falls between two
+samples and is charged to nobody. What it does cost is a clock read and two map
+lookups per executed line, which roughly doubles the time a trivial line takes:
+**the measured milliseconds are real, the proportions are what to trust.** A run
+of the same 21,514 lines measured 9.7ms with profiling alone and 82.8ms with
+breakpoints installed as well.
+
+- **`selfMs` is the line's own time**, and a location's is the sum of its lines'.
+- **`waitMs` is time the line spent waiting on the player** rather than on the
+  interpreter — a `MSG`, an `INPUT`, a `SLEEP`, a held breakpoint. It is kept
+  separate because a game is not slow for having asked a question.
+- **`inclMs` is that location and everything it called**, so a three-line
+  location that `GOSUB`s something expensive is not reported as cheap.
+- **`maxMs` is the worst single execution of that line**, which is where a hitch
+  shows up that an average hides.
+
+Only location code is measured, for the same reason only location code is
+traced: the engine reports a line offset for nothing else, so `exec`, `DYNAMIC`
+and `DYNEVAL` run untimed.
+
+### The call graph
+
+There is no call stack in the public API — `QSPGetCurStateData` reports where
+the engine is, never how it got there. One is inferred from the sequence of
+locations the lines arrive from: a line from a location already on the stack is
+a return to it, anything else is a call. That is exact for the `GOTO` and
+`GOSUB` chains a game is made of, and approximate in one place — a location that
+recurses into itself reads as one long stay rather than as nested frames, so its
+inclusive time is the outermost call's, counted once rather than once per level.
+
+`edges` is that graph as caller/callee pairs with a call count, which is what an
+editor needs to draw a flame graph or an arrow between two boxes. It is sent as
+edges rather than as a tree because a tree would have to be rebuilt for each
+root.
+
+### What the player itself is doing
+
+`counters` is the half of the cost the line profiler cannot see. A line that
+triggers a refresh makes the player rebuild up to four documents and hand them
+to a browser engine; from inside the interpreter that is just time passing.
+
+| counter | what it times |
+| --- | --- |
+| `refresh` | one whole `RefreshInt`, everything below it included |
+| `mainDesc`, `varsDesc` | building and pushing a description pane, with `bytes` |
+| `actions`, `objects` | rebuilding a list pane |
+| `image` | loading a picture from disk |
+| `script` | handing a script to a web pane, with `bytes` |
+| `sound` | starting a track |
+| `dialog` | `MSG`, `INPUT` and menus: the engine waiting on a human |
+| `saveLoad` | a save or a load, file dialog included |
+
+`bytes` is how much text the work moved, which names a cost no timing does: a
+description that has grown to a megabyte is slow for a reason, and the refresh
+that pushes it will say so before the profile does. Being pushed to the browser
+asynchronously, `script` measures the hand-over and not the render.
+
+Counters cost a branch and two adds while a profile or a monitor is running, and
+exactly nothing otherwise.
+
+### Profiling while stopped
+
+`profile` is answered while the game is held at a breakpoint, because reading
+the counters cannot call into the interpreter. Starting or stopping it is
+refused there — that would install or remove the debug hook from inside the
+debug hook, with game code on the stack.
+
+Time spent held at a breakpoint is charged as `waitMs`, so a profile taken
+across a pause reads like one taken without.
+
+## The live monitor
+
+`monitor` is the other half: not a report at the end, but a sample every so
+often, which is what a graph in an editor wants.
+
+```jsonc
+{"method":"monitor","params":{"enabled":true,"intervalMs":250}}
+```
+```jsonc
+{"jsonrpc":"2.0","method":"perf","params":{
+  "windowMs":251.0,"profiling":true,"busy":false,
+  "lines":21514,"linesPerSec":85636,"selfMs":39.9,"waitMs":0.0,
+  "busyPct":15.9,"memoryKB":46256,
+  "counters":[{"name":"refresh","count":1,"totalMs":0.04},
+              {"name":"varsDesc","count":1,"totalMs":0.01,"bytes":4012}]}}
+```
+
+Each sample is the window since the last one, not a running total — a client
+that wants totals asks for a report. `busyPct` is how much of the window the
+player spent inside the interpreter, which is the number to watch: a game that
+pegs it is one that never lets the UI breathe.
+
+The sampler is a timer rather than the idle handler, so samples keep arriving
+while the game sits still doing nothing. That is the difference between a
+monitor and a profile, and it is why the monitor does **not** install the
+per-line hook: it costs nothing to leave running for a whole session. `lines`,
+`linesPerSec` and `busyPct` are therefore zero unless a profile is running at
+the same time, and the two can be turned on together.
+
+`intervalMs` is clamped to 50 at the low end. Turning the monitor off while a
+profile is running leaves the profile alone, and the other way round.
+
 ## Notifications
 
 | method | params |
@@ -305,6 +460,7 @@ once the interpreter is off the stack, for the same reason commands are.
 | `gameOpened` | `path`, `locations` |
 | `varsChanged` | `reason`, `loc`, `changes[]` — see above |
 | `trace` | `dropped`, `events[]` — see above |
+| `perf` | `windowMs`, `lines`, `linesPerSec`, `busyPct`, `memoryKB`, `counters[]` — see above |
 | `paused` | `reason`, `loc`, `actIndex`, `lineNum`, `line` — see below |
 | `resumed` | `loc` |
 | `scriptError` | `kind` (`error`\|`warning`\|`resource`), `text`, `where`, `pane` |

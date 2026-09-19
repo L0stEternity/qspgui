@@ -25,7 +25,8 @@
 
     enum
     {
-        ID_MSG_DESC
+        ID_MSG_DESC,
+        ID_MSG_COPY
     };
 
     class QSPMsgDlg : public wxDialog
@@ -48,13 +49,23 @@
                   const wxString& text,
                   bool isHtml,
                   PathProvider *pathProvider);
+
+        /* Offers a button that puts this text on the clipboard. What the
+           dialog shows is written for whoever is reading the game; this is the
+           same thing written for whoever has to fix it, and it is only worth a
+           button when there is something worth pasting. Empty by default, and
+           the button only appears once it is set. */
+        void SetCopyText(const wxString& text);
     protected:
         // Events
         void OnInitDialog(wxInitDialogEvent& event);
         void OnLinkClicked(wxHtmlLinkEvent& event);
+        void OnCopy(wxCommandEvent& event);
 
         // Fields
         QSPTextBox *m_desc;
+        wxButton *m_btnCopy;
+        wxString m_copyText;
     };
 
 #endif

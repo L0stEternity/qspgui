@@ -353,6 +353,15 @@ msgstr "Schnellspeicherung konnte nicht geschrieben werden"
 msgid "Follow s&ystem light / dark theme"
 msgstr "S&ystemdesign hell / dunkel folgen"
 
+msgid "Li&ght theme"
+msgstr "&Helles Design"
+
+msgid "Dar&k theme"
+msgstr "Dun&kles Design"
+
+msgid "Menus and dialogs follow when the player is restarted"
+msgstr "Menüs und Dialoge folgen nach einem Neustart des Players"
+
 msgid "Save to slo&t"
 msgstr "In Pla&tz speichern"
 
@@ -376,3 +385,27 @@ msgstr "Platz %d ist leer"
 
 msgid "Loaded slot %d"
 msgstr "Platz %d geladen"
+
+msgid "&Copy details"
+msgstr "&Details kopieren"
+
+msgid "Copied"
+msgstr "Kopiert"
+
+msgid "Opening the game"
+msgstr "Spiel wird geöffnet"
+
+msgid "Unpacking the game world"
+msgstr "Spielwelt wird entpackt"
+
+msgid "Starting the game"
+msgstr "Spiel wird gestartet"
+
+msgid "Loading the saved game"
+msgstr "Spielstand wird geladen"
+
+msgid "Restoring the saved game"
+msgstr "Spielstand wird wiederhergestellt"
+
+msgid "Large games take a while to unpack - %d s so far"
+msgstr "Große Spiele brauchen zum Entpacken etwas Zeit – bisher %d s"

@@ -77,6 +77,8 @@
         static wxString BuildShellDocument();
         wxString BuildItemsScript() const;
         wxString BuildStyleScript() const;
+        /* What the row under the mouse is painted with; see the definition */
+        wxColour SelectionColor() const;
         wxString BuildUserStylesScript() const;
 
         // Overridden from QSPWebPane

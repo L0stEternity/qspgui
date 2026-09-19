@@ -24,6 +24,8 @@
     #include <wx/scopeguard.h>
     #include <wx/filefn.h>
     #include <wx/uri.h>
+    #include <atomic>
+    #include <map>
     #include <vector>
 
     #define QSP_APPNAME wxT("qspgui")
@@ -82,11 +84,52 @@
            meaningful when it returns true. An empty file reads as an empty
            vector rather than a failure. */
         static bool Read(const wxString &path, std::vector<char> &data);
+        /* The same read, in pieces, publishing how far it has got. Meant for
+           the game worlds and saves that are big enough to be worth waiting
+           for: another thread watches the counters while the loading overlay
+           draws them, so both are atomic. total is written before any byte is
+           counted, so a reader that sees a count has a total to divide it by. */
+        static bool Read(const wxString &path, std::vector<char> &data,
+                         std::atomic<wxFileOffset> &done, std::atomic<wxFileOffset> &total);
         static bool Write(const wxString &path, const void *data, size_t size);
         static bool Write(const wxString &path, const std::vector<char> &data)
         {
             return Write(path, data.empty() ? NULL : &data[0], data.size());
         }
+    };
+
+    /* Keeping the docked panes at the same share of the window.
+
+       wxAUI stores a dock's size in pixels, so a layout that looks right on a
+       small window turns into a thin strip of actions and objects around a
+       huge description on a large one - and every resize in between changes
+       the proportions again. This rewrites the dock sizes in a perspective
+       string so that each dock keeps the fraction of the window it had.
+
+       The fractions are remembered between calls rather than recomputed from
+       the pixels every time: rounding to whole pixels on every step of a slow
+       drag would otherwise walk the layout away from where it started. A dock
+       whose size changed behind our back - the user dragged its sash - is
+       measured again instead. */
+    class QSPDockLayout
+    {
+    public:
+        /* perspective is what wxAuiManager::SavePerspective() returned while
+           the window's client area was oldSize; the result is the same string
+           with the dock sizes scaled for newSize. Panes named in fixedPanes
+           keep their dock at its current size: the input row is a single line
+           of text and has no business growing with the window.
+
+           The string is returned unchanged when there is nothing to scale, so
+           the caller can skip reloading the layout. */
+        wxString Rescale(const wxString &perspective, const wxSize &oldSize, const wxSize &newSize,
+                         const wxArrayString &fixedPanes);
+        /* Forget the measurements, for when the layout is replaced wholesale */
+        void Reset();
+
+    private:
+        std::map<wxString, double> m_fractions; /* dock key -> share of the window */
+        std::map<wxString, int> m_applied;      /* dock key -> size we last wrote */
     };
 
     /* Serialising the live session. The engine reports the buffer size it

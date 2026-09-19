@@ -22,6 +22,9 @@
 #include "callbacks_gui.h"
 #include "devserver.h"
 
+#include <wx/utils.h>
+#include <thread>
+
 #include "icons/logo.xpm"
 #include "icons/logo_big.xpm"
 #include "icons/open.xpm"
@@ -31,6 +34,74 @@
 #include "icons/statussave.xpm"
 #include "icons/windowmode.xpm"
 #include "icons/about.xpm"
+
+#ifdef __WXMSW__
+namespace
+{
+    /* Windows hands a popup menu the light theme's check mark whatever the
+       menu itself is painted in, so on a dark menu the tick and the radio dot
+       are black on near-black and simply are not there. A menu item that
+       carries its own bitmaps is drawn from those instead, so the mark is
+       drawn here in the colour the menu text uses.
+
+       Deliberately hard-edged: the bitmap is blitted through a colour mask, so
+       an antialiased edge would come out fringed in the mask colour. A tick
+       two pixels thick is what Windows draws anyway. */
+    wxBitmap BuildMenuMark(wxWindow *window, bool isRadio)
+    {
+        const int size = window->FromDIP(14);
+        /* Nothing in a mark ever uses it, so it can stand for "not drawn" */
+        const wxColour transparent(0xFF, 0x00, 0xFF);
+
+        wxBitmap mark(size, size);
+        {
+            wxMemoryDC dc(mark);
+            dc.SetBackground(wxBrush(transparent));
+            dc.Clear();
+
+            wxColour color(wxSystemSettings::GetColour(wxSYS_COLOUR_MENUTEXT));
+            if (isRadio)
+            {
+                dc.SetPen(wxPen(color));
+                dc.SetBrush(wxBrush(color));
+                dc.DrawCircle(size / 2, size / 2, wxMax(2, size / 5));
+            }
+            else
+            {
+                wxPoint tick[3] = {
+                    wxPoint(size * 22 / 100, size * 52 / 100),
+                    wxPoint(size * 42 / 100, size * 74 / 100),
+                    wxPoint(size * 80 / 100, size * 26 / 100)
+                };
+                dc.SetPen(wxPen(color, wxMax(2, size / 7)));
+                dc.DrawLines(3, tick);
+            }
+        }
+        mark.SetMask(new wxMask(mark, transparent));
+        return mark;
+    }
+
+    void ApplyMenuMarks(wxMenu *menu, wxWindow *window)
+    {
+        wxMenuItemList& items = menu->GetMenuItems();
+        for (wxMenuItemList::iterator i = items.begin(); i != items.end(); ++i)
+        {
+            wxMenuItem *item = *i;
+            if (item->IsSubMenu())
+            {
+                ApplyMenuMarks(item->GetSubMenu(), window);
+                continue;
+            }
+            /* Only items with no bitmap of their own: one that has one is
+               already drawn from it, and its check state is the menu's to
+               show, not ours to overwrite. */
+            if (!item->IsCheckable() || item->GetBitmap().IsOk()) continue;
+
+            item->SetBitmaps(BuildMenuMark(window, item->GetKind() == wxITEM_RADIO));
+        }
+    }
+}
+#endif // __WXMSW__
 
 BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_INIT(QSPFrame::OnInit)
@@ -52,7 +123,9 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MENU(ID_SELECTFONTCOLOR, QSPFrame::OnSelectFontColor)
     EVT_MENU(ID_SELECTBACKCOLOR, QSPFrame::OnSelectBackColor)
     EVT_MENU(ID_SELECTLINKCOLOR, QSPFrame::OnSelectLinkColor)
-    EVT_MENU(ID_USESYSTEMCOLORS, QSPFrame::OnUseSystemColors)
+    EVT_MENU(ID_USESYSTEMCOLORS, QSPFrame::OnSelectTheme)
+    EVT_MENU(ID_LIGHTTHEME, QSPFrame::OnSelectTheme)
+    EVT_MENU(ID_DARKTHEME, QSPFrame::OnSelectTheme)
     EVT_SYS_COLOUR_CHANGED(QSPFrame::OnSysColourChanged)
     EVT_MENU(ID_CHECKUPDATESONSTARTUP, QSPFrame::OnCheckUpdatesOnStartup)
     EVT_MENU(ID_SELECTLANG, QSPFrame::OnSelectLang)
@@ -82,6 +155,7 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MOUSEWHEEL(QSPFrame::OnWheel)
     EVT_LEFT_DOWN(QSPFrame::OnMouseClick)
     EVT_AUI_PANE_CLOSE(QSPFrame::OnPaneClose)
+    EVT_SIZE(QSPFrame::OnSize)
     EVT_DROP_FILES(QSPFrame::OnDropFiles)
 END_EVENT_TABLE()
 
@@ -158,7 +232,9 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     colorsMenu->Append(ID_SELECTBACKCOLOR, wxT("-"));
     colorsMenu->Append(ID_SELECTLINKCOLOR, wxT("-"));
     colorsMenu->AppendSeparator();
-    colorsMenu->AppendCheckItem(ID_USESYSTEMCOLORS, wxT("-"));
+    colorsMenu->AppendRadioItem(ID_USESYSTEMCOLORS, wxT("-"));
+    colorsMenu->AppendRadioItem(ID_LIGHTTHEME, wxT("-"));
+    colorsMenu->AppendRadioItem(ID_DARKTHEME, wxT("-"));
     // ------------
     wxMenu *volumeMenu = new wxMenu;
     volumeMenu->AppendRadioItem(ID_VOLUME0, wxT("-"));
@@ -225,6 +301,7 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
 #endif
     // --------------------------------------
     m_toast = new QSPToast(this);
+    m_loadingOverlay = new QSPLoadingOverlay(this);
     // --------------------------------------
     SetMinClientSize(wxSize(450, 300));
     SetOverallVolume(100);
@@ -234,7 +311,10 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_keyPressedWhileDisabled = false;
     m_isGameOpened = false;
     m_isManagerUpdatePending = false;
-    m_toUseSystemColors = false;
+    m_isRescalingDocks = false;
+    m_isLoading = false;
+    m_lastLayoutSize = wxSize(0, 0);
+    m_colorTheme = QSP_THEME_SYSTEM;
 }
 
 QSPFrame::~QSPFrame()
@@ -264,7 +344,7 @@ void QSPFrame::SaveSettings()
     cfg.Write(wxT("General/ShowHotkeys"), m_toShowHotkeys);
     cfg.Write(wxT("General/Panels"), m_manager->SavePerspective());
     cfg.Write(wxT("General/CheckUpdates"), m_toCheckUpdates);
-    cfg.Write(wxT("Colors/UseSystemColors"), m_toUseSystemColors);
+    cfg.Write(wxT("Colors/Theme"), m_colorTheme);
     m_transHelper->Save(cfg, wxT("General/Language"));
     GetPosition(&x, &y);
     GetClientSize(&w, &h);
@@ -280,24 +360,29 @@ void QSPFrame::LoadSettings()
     bool toMaximize;
     int x, y, w, h, temp;
     Hide();
-    /* Asked before the config is opened, because opening it can create it */
-    bool isFirstRun = !wxFileExists(m_configPath);
 
     wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configPath);
-    /* The stored form is QSP's own 0xBBGGRR, which is also what wxColour's
-       packed constructor reads - so the defaults have to be built from
-       components rather than written as literals. */
-    wxColour sysBack, sysFont, sysLink;
-    GetAppearanceColors(sysBack, sysFont, sysLink);
-    /* On by default, so a first run on a dark desktop looks like one. An
-       existing config predates the setting and keeps the colours it has. */
-    cfg.Read(wxT("Colors/UseSystemColors"), &m_toUseSystemColors, isFirstRun);
-    cfg.Read(wxT("Colors/BackColor"), &temp, (int)QSPTools::PackColor(sysBack));
-    m_backColor = (m_toUseSystemColors ? sysBack : wxColour(temp));
-    cfg.Read(wxT("Colors/FontColor"), &temp, (int)QSPTools::PackColor(sysFont));
-    m_fontColor = (m_toUseSystemColors ? sysFont : wxColour(temp));
-    cfg.Read(wxT("Colors/LinkColor"), &temp, (int)QSPTools::PackColor(sysLink));
-    m_linkColor = (m_toUseSystemColors ? sysLink : wxColour(temp));
+    /* The desktop's light or dark setting is followed on a first run, so the
+       player's frame matches everything else on screen. The setting used to
+       be a plain on/off flag for exactly that, and an existing config that
+       had it off asked for the classic light frame. */
+    bool toUseSystemColors;
+    cfg.Read(wxT("Colors/UseSystemColors"), &toUseSystemColors, true);
+    cfg.Read(wxT("Colors/Theme"), &m_colorTheme, (toUseSystemColors ? QSP_THEME_SYSTEM : QSP_THEME_LIGHT));
+    if (m_colorTheme < QSP_THEME_SYSTEM || m_colorTheme > QSP_THEME_DARK)
+        m_colorTheme = QSP_THEME_SYSTEM;
+    /* The page, the text and the links belong to the game: these are only the
+       fallbacks it inherits when it sets none of them, and the player's own
+       historic ones at that - the theme has no say in them. The stored form is
+       QSP's own 0xBBGGRR, which is also what wxColour's packed constructor
+       reads, so the defaults are built from components rather than written as
+       literals. */
+    cfg.Read(wxT("Colors/BackColor"), &temp, (int)QSPTools::PackColor(wxColour(0xE0, 0xE0, 0xE0)));
+    m_backColor = wxColour(temp);
+    cfg.Read(wxT("Colors/FontColor"), &temp, (int)QSPTools::PackColor(wxColour(0x00, 0x00, 0x00)));
+    m_fontColor = wxColour(temp);
+    cfg.Read(wxT("Colors/LinkColor"), &temp, (int)QSPTools::PackColor(wxColour(0x00, 0x00, 0xFF)));
+    m_linkColor = wxColour(temp);
     temp = wxNORMAL_FONT->GetPointSize();
     if (temp < 12) temp = 12;
     cfg.Read(wxT("Font/FontSize"), &m_fontSize, temp);
@@ -335,7 +420,8 @@ void QSPFrame::LoadSettings()
     RefreshUI();
     m_settingsMenu->Check(ID_USEFONTSIZE, m_toUseFontSize);
     m_settingsMenu->Check(ID_CHECKUPDATESONSTARTUP, m_toCheckUpdates);
-    m_settingsMenu->Check(ID_USESYSTEMCOLORS, m_toUseSystemColors);
+    SetColorTheme(m_colorTheme);
+    ApplyThemeToDockArt();
     m_manager->LoadPerspective(panels);
     m_manager->RestoreMaximizedPane();
     // Check for correct position
@@ -350,7 +436,13 @@ void QSPFrame::LoadSettings()
     if (x + w - 1 > dispRect.GetRight()) x = dispRect.GetRight() - w + 1;
     if (y + h - 1 > dispRect.GetBottom()) y = dispRect.GetBottom() - h + 1;
     // --------------------------
+    /* The dock sizes just restored belong to the window size being restored
+       with them, so that is the size every later resize is measured against.
+       Whatever the window was sized at while it was being built is not. */
+    m_dockLayout.Reset();
+    m_lastLayoutSize = wxSize(0, 0);
     SetSize(x, y, w, h);
+    if (m_lastLayoutSize.GetWidth() < 1) m_lastLayoutSize = GetClientSize();
     ShowPane(ID_VIEWPIC, false);
     ShowPane(ID_ACTIONS, true);
     ShowPane(ID_OBJECTS, true);
@@ -548,6 +640,27 @@ void QSPFrame::UpdateGamePath(const wxString &fullPath)
 {
     wxFileName fileName(fullPath, wxPATH_DOS);
     m_worldPath = fileName.GetPath(wxPATH_GET_VOLUME | wxPATH_GET_SEPARATOR);
+    NotifyPanesOfGamePath();
+}
+
+/* The game folder is where every pane resolves the game's pictures against,
+   and in the browser renderer it is also a virtual host that has to be
+   registered with each browser control before a document can fetch anything
+   from it. A pane reads the folder through its path provider, so handing the
+   provider over again is how it is told the folder has moved; the classic
+   panes only keep the pointer, so for them this is a no-op.
+
+   It has to be pushed rather than waited for. A pane that registers the host
+   only when its own document finishes loading gets nothing when the player is
+   started empty and a game is opened afterwards - which is the ordinary way to
+   open one - and then every picture in it fails to load. */
+void QSPFrame::NotifyPanesOfGamePath()
+{
+    m_desc->SetPathProvider(this);
+    m_vars->SetPathProvider(this);
+    m_objects->SetPathProvider(this);
+    m_actions->SetPathProvider(this);
+    m_imgView->SetPathProvider(this);
 }
 
 /* Keeps the full path of the world file, which UpdateGamePath discards -
@@ -577,6 +690,127 @@ wxString QSPFrame::ComposeGamePath(const wxString &relativePath) const
 bool QSPFrame::IsValidFullPath(const wxString &path) const
 {
     return QSPPaths::IsContained(m_worldPath, path);
+}
+
+/* The lines around the one that failed. The engine hands the error a single
+   line of code, which is rarely enough to see what went wrong; the location's
+   own code is there for the asking and is not modified by reading it, so the
+   report carries a window of it with the failing line marked.
+
+   The engine counts a location's code from one and the stored lines from zero,
+   hence the offset - it is the same one qspExecCode applies on the way in. */
+void QSPFrame::AppendErrorCode(wxString &report, const QSPErrorInfo &errorInfo,
+                               const wxString &rule) const
+{
+    wxString locName(qspToWxString(errorInfo.LocName));
+    if (locName.IsEmpty()) return;
+
+    QSPMutableString location(locName);
+    wxString title;
+    int linesCount;
+    if (errorInfo.ActIndex < 0)
+    {
+        linesCount = QSPGetLocationCode(location, 0, 0);
+        title = wxString::Format(wxT("CODE - %s"), locName);
+    }
+    else
+    {
+        linesCount = QSPGetLocationActionCode(location, errorInfo.ActIndex, 0, 0);
+        title = wxString::Format(wxT("CODE - %s, action %d"), locName, errorInfo.ActIndex + 1);
+    }
+    if (linesCount <= 0) return;
+
+    std::vector<QSPLineInfo> lines(linesCount);
+    if (errorInfo.ActIndex < 0)
+        QSPGetLocationCode(location, &lines[0], linesCount);
+    else
+        QSPGetLocationActionCode(location, errorInfo.ActIndex, &lines[0], linesCount);
+
+    int failed = -1;
+    for (int i = 0; i < linesCount; ++i)
+    {
+        if (lines[i].LineNum + 1 == errorInfo.TopLineNum) { failed = i; break; }
+    }
+    if (failed < 0) return;
+
+    const int context = 4;
+    int first = wxMax(0, failed - context);
+    int last = wxMin(linesCount - 1, failed + context);
+
+    report << rule << wxT("  ") << title << wxT("\n") << rule;
+    for (int i = first; i <= last; ++i)
+    {
+        /* The failing line is marked, not merely numbered: a line number is no
+           use to whoever pasted this without the file in front of them. */
+        report << wxString::Format(wxT("%s %4d | %s\n"),
+                                   (i == failed ? wxT("  >>") : wxT("    ")),
+                                   lines[i].LineNum + 1,
+                                   qspToWxString(lines[i].Line));
+    }
+}
+
+/* One block of plain text somebody can paste into a bug report: what failed,
+   exactly where, and the code around it. Nothing that is true of every report
+   - no timestamps, no machine paths - because that is what buries the three
+   lines that matter. Framed in ASCII so it survives being pasted somewhere
+   that keeps none of the formatting. */
+wxString QSPFrame::BuildErrorReport(const QSPErrorInfo &errorInfo) const
+{
+    static const wxChar *heavy = wxT("================================================================\n");
+    static const wxChar *light = wxT("----------------------------------------------------------------\n");
+
+    wxString locName(qspToWxString(errorInfo.LocName));
+    wxString report;
+
+    report << heavy
+           << wxString::Format(wxT("  QSP ERROR %d - %s\n"), errorInfo.ErrorNum,
+                               wxGetTranslation(qspToWxString(errorInfo.ErrorDesc)))
+           << heavy;
+
+    /* Aligned labels rather than prose: this gets scanned, not read */
+    if (!locName.IsEmpty())
+    {
+        report << wxString::Format(wxT("  Location  : %s (%s)\n"), locName,
+                                   (errorInfo.ActIndex < 0
+                                        ? wxString(wxT("on visit"))
+                                        : wxString::Format(wxT("on action %d"), errorInfo.ActIndex + 1)));
+        report << wxString::Format(wxT("  Line      : %d of the location, %d of the code being run\n"),
+                                   errorInfo.TopLineNum, errorInfo.IntLineNum);
+    }
+    else
+    {
+        /* No location means the engine was between them - navigating, or
+           running code handed to it from outside - and then the location the
+           reader is standing in is the only thing that places the error at
+           all. Safe to ask for here: everything above is already copied out of
+           the engine's own memory, so evaluating an expression cannot pull it
+           out from under us. */
+        wxString current(m_isGameOpened ? GetCurrentLocationName() : wxString());
+        if (!current.IsEmpty())
+            report << wxString::Format(wxT("  Location  : none; the player is standing in %s\n"), current);
+        else
+            report << wxT("  Location  : none\n");
+        if (errorInfo.IntLineNum)
+            report << wxString::Format(wxT("  Line      : %d of the code being run\n"), errorInfo.IntLineNum);
+    }
+
+    wxString line(qspToWxString(errorInfo.IntLine));
+    if (!line.IsEmpty())
+        report << wxT("  Statement : ") << line << wxT("\n");
+
+    /* The file's name, not where this particular machine happens to keep it */
+    if (!m_gameFilePath.IsEmpty())
+        report << wxT("  Game      : ") << wxFileName(m_gameFilePath).GetFullName() << wxT("\n");
+    report << wxT("  Player    : ") << QSP_VER << wxT(" (") << QSPTools::GetPlatform()
+#ifdef QSPGUI_USE_WEBVIEW
+           << wxT(", browser renderer)\n");
+#else
+           << wxT(", classic renderer)\n");
+#endif
+
+    AppendErrorCode(report, errorInfo, light);
+    report << heavy;
+    return report;
 }
 
 void QSPFrame::ShowError()
@@ -620,6 +854,9 @@ void QSPFrame::ShowError()
                      false,
                      this
     );
+    /* The dialog says what a reader needs; the report behind the copy button
+       says what whoever has to fix it needs. */
+    dialog.SetCopyText(BuildErrorReport(errorInfo));
     bool oldToProcessEvents = m_toProcessEvents;
     m_toProcessEvents = false;
     dialog.ShowModal();
@@ -673,6 +910,8 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_SELECTBACKCOLOR, _("Select &background color...\tAlt-B"));
     menuBar->SetLabel(ID_SELECTLINKCOLOR, _("Select l&inks color...\tAlt-I"));
     menuBar->SetLabel(ID_USESYSTEMCOLORS, _("Follow s&ystem light / dark theme"));
+    menuBar->SetLabel(ID_LIGHTTHEME, _("Li&ght theme"));
+    menuBar->SetLabel(ID_DARKTHEME, _("Dar&k theme"));
     menuBar->SetLabel(ID_VOLUME, _("Sound &volume"));
     menuBar->SetLabel(ID_VOLUME0, _("No sound\tAlt-1"));
     menuBar->SetLabel(ID_VOLUME20, _("20%\tAlt-2"));
@@ -692,7 +931,28 @@ void QSPFrame::ReCreateGUI()
     m_manager->GetPane(wxT("vars")).Caption(_("Additional desc"));
     m_manager->GetPane(wxT("input")).Caption(_("Input area"));
     // --------------------------------------
+    ApplyThemeToMenus();
     m_manager->Update();
+}
+
+/* The ticks and dots beside the checkable menu items. Unlike the pane captions
+   this is not part of ApplyThemeToDockArt: Windows decides a menu's light or
+   dark look once, before the first window exists, so it is settled for the run
+   and only has to be done when the labels are built. */
+void QSPFrame::ApplyThemeToMenus()
+{
+#ifdef __WXMSW__
+    /* A light menu draws its own marks perfectly well, and giving an item a
+       bitmap turns the whole menu owner-drawn - so this is only worth doing
+       where the stock mark cannot be seen. */
+    if (!wxSystemSettings::GetAppearance().IsDark()) return;
+
+    wxMenuBar *menuBar = GetMenuBar();
+    if (!menuBar) return;
+
+    for (size_t i = 0; i < menuBar->GetMenuCount(); ++i)
+        ApplyMenuMarks(menuBar->GetMenu(i), this);
+#endif
 }
 
 void QSPFrame::RefreshUI()
@@ -755,55 +1015,75 @@ bool QSPFrame::ApplyBackColor(const wxColour& color)
     return true;
 }
 
-/* The historic defaults are a light grey page, black text and blue links, and
-   that is still exactly what a light desktop gets. A dark one gets the same
-   relationships rather than the same numbers: a page darker than the window
-   chrome around it, text a little short of white so it doesn't glare, and a
-   link light enough to stay legible against it.
-
-   A game that sets $BCOLOR / $FCOLOR / $LCOLOR still overrides all of this -
-   these are only the player's own defaults, which is what ApplyParams falls
-   back to. */
-void QSPFrame::GetAppearanceColors(wxColour &back, wxColour &font, wxColour &link)
+void QSPFrame::SetColorTheme(int theme)
 {
-    if (wxSystemSettings::GetAppearance().IsDark())
+    m_colorTheme = theme;
+    if (!m_settingsMenu) return;
+
+    wxWindowID id;
+    switch (theme)
     {
-        back = wxColour(0x1E, 0x1E, 0x1E);
-        font = wxColour(0xE0, 0xE0, 0xE0);
-        link = wxColour(0x6C, 0xB6, 0xFF);
+    case QSP_THEME_LIGHT: id = ID_LIGHTTHEME; break;
+    case QSP_THEME_DARK: id = ID_DARKTHEME; break;
+    default: id = ID_USESYSTEMCOLORS; break;
     }
-    else
-    {
-        back = wxColour(0xE0, 0xE0, 0xE0);
-        font = wxColour(0x00, 0x00, 0x00);
-        link = wxColour(0x00, 0x00, 0xFF);
-    }
+    m_settingsMenu->Check(id, true);
 }
 
-void QSPFrame::SetUseSystemColors(bool toUse)
+bool QSPFrame::IsDarkTheme() const
 {
-    m_toUseSystemColors = toUse;
-    if (m_settingsMenu) m_settingsMenu->Check(ID_USESYSTEMCOLORS, toUse);
+    switch (m_colorTheme)
+    {
+    case QSP_THEME_LIGHT: return false;
+    case QSP_THEME_DARK: return true;
+    default: break;
+    }
+    return wxSystemSettings::GetAppearance().IsDark();
 }
 
-void QSPFrame::ApplySystemColors()
+/* The captions over the panes, the sashes between them and the border round
+   the lot. Windows draws the menus and the dropdowns and only lets that be
+   decided once, at startup - but these are ours, so they follow the theme the
+   moment it is picked. */
+void QSPFrame::ApplyThemeToDockArt()
 {
-    if (!m_toUseSystemColors) return;
+    wxAuiDockArt *art = (m_manager ? m_manager->GetArtProvider() : NULL);
+    if (!art) return;
 
-    wxColour back, font, link;
-    GetAppearanceColors(back, font, link);
-    if (back == m_backColor && font == m_fontColor && link == m_linkColor) return;
+    bool isDark = IsDarkTheme();
+    wxColour background(isDark ? wxColour(0x2B, 0x2B, 0x2B) : wxColour(0xF0, 0xF0, 0xF0));
+    wxColour border(isDark ? wxColour(0x18, 0x18, 0x18) : wxColour(0xA0, 0xA0, 0xA0));
 
-    m_backColor = back;
-    m_fontColor = font;
-    m_linkColor = link;
-    ApplyBackColor(back);
-    ApplyFontColor(font);
-    ApplyLinkColor(link);
-    /* A game's own colours win, and ApplyParams is what re-asserts them - so
-       it runs after ours rather than being skipped when a game is open. */
-    if (m_isGameOpened) ApplyParams();
-    RefreshUI();
+    art->SetColour(wxAUI_DOCKART_BACKGROUND_COLOUR, background);
+    art->SetColour(wxAUI_DOCKART_SASH_COLOUR, background);
+    art->SetColour(wxAUI_DOCKART_GRIPPER_COLOUR, background);
+    art->SetColour(wxAUI_DOCKART_BORDER_COLOUR, border);
+    art->SetColour(wxAUI_DOCKART_ACTIVE_CAPTION_COLOUR,
+        (isDark ? wxColour(0x3C, 0x40, 0x45) : wxColour(0xC4, 0xD9, 0xF2)));
+    art->SetColour(wxAUI_DOCKART_ACTIVE_CAPTION_GRADIENT_COLOUR,
+        (isDark ? wxColour(0x2F, 0x32, 0x36) : wxColour(0xEC, 0xF3, 0xFC)));
+    art->SetColour(wxAUI_DOCKART_ACTIVE_CAPTION_TEXT_COLOUR,
+        (isDark ? wxColour(0xF0, 0xF0, 0xF0) : wxColour(0x00, 0x00, 0x00)));
+    art->SetColour(wxAUI_DOCKART_INACTIVE_CAPTION_COLOUR,
+        (isDark ? wxColour(0x2B, 0x2B, 0x2B) : wxColour(0xE2, 0xE2, 0xE2)));
+    art->SetColour(wxAUI_DOCKART_INACTIVE_CAPTION_GRADIENT_COLOUR,
+        (isDark ? wxColour(0x24, 0x24, 0x24) : wxColour(0xF4, 0xF4, 0xF4)));
+    art->SetColour(wxAUI_DOCKART_INACTIVE_CAPTION_TEXT_COLOUR,
+        (isDark ? wxColour(0xBD, 0xBD, 0xBD) : wxColour(0x40, 0x40, 0x40)));
+
+    /* The toast is the player speaking, not the game, so it is painted like
+       the frame rather than like the page. */
+    wxColour chromeText(isDark ? wxColour(0xF0, 0xF0, 0xF0) : wxColour(0x1A, 0x1A, 0x1A));
+    if (m_toast)
+        m_toast->SetColors(background, chromeText);
+    /* The loading overlay is the player too, and it is what the reader looks
+       at for seconds at a time - a light card on a dark desktop would be the
+       one bright thing in the window. */
+    if (m_loadingOverlay)
+        m_loadingOverlay->SetColors(background, chromeText);
+
+    RequestManagerUpdate();
+    Refresh();
 }
 
 bool QSPFrame::ApplyLinkColor(const wxColour& color)
@@ -861,18 +1141,110 @@ void QSPFrame::TogglePane(wxWindowID id)
     ShowPane(id, toShow);
 }
 
+/* The overlay and the background thread live here rather than in the panes or
+   the callbacks because this is the only place a load is started from: the
+   engine's own OPENQST runs inside game code and cannot be moved off this
+   thread, so it is left alone. */
+void QSPFrame::BeginLoading(const wxString &stage, const wxString &detail)
+{
+    m_isLoading = true;
+    if (m_toast) m_toast->Dismiss();
+    if (m_loadingOverlay) m_loadingOverlay->Begin(stage, detail);
+}
+
+void QSPFrame::SetLoadingStage(const wxString &stage)
+{
+    if (m_loadingOverlay) m_loadingOverlay->SetStage(stage);
+}
+
+void QSPFrame::EndLoading()
+{
+    m_isLoading = false;
+    if (m_loadingOverlay) m_loadingOverlay->End();
+}
+
+void QSPFrame::RunLoadingStep(const std::function<void()> &work,
+                              std::atomic<wxFileOffset> *done,
+                              std::atomic<wxFileOffset> *total)
+{
+    if (!m_loadingOverlay || !m_loadingOverlay->IsRunning() || m_toQuit)
+    {
+        /* No overlay to keep alive, so there is nothing to gain by leaving
+           this thread - and plenty to lose. */
+        work();
+        return;
+    }
+
+    std::atomic<bool> isFinished(false);
+    std::exception_ptr failure;
+    std::thread worker([&work, &isFinished, &failure]()
+    {
+        try
+        {
+            work();
+        }
+        catch (...)
+        {
+            /* Carried back rather than thrown here: an exception leaving a
+               std::thread's function calls terminate(). */
+            failure = std::current_exception();
+        }
+        isFinished = true;
+    });
+
+    /* Nothing the reader does may reach the engine while its world is half
+       written. Every path into it is already behind m_toProcessEvents, which
+       goes down here for the length of the step, and the window disabler
+       closes what is left: the menu bar, dropped files, the frame's own keys. */
+    bool oldToProcessEvents = m_toProcessEvents;
+    m_toProcessEvents = false;
+    {
+        wxWindowDisabler disabler(m_loadingOverlay);
+        while (!isFinished.load())
+        {
+            if (done && total) m_loadingOverlay->SetProgress(done->load(), total->load());
+            m_loadingOverlay->Tick();
+            /* Paints, and the messages Windows needs answered for the window
+               to count as alive - which is the whole point of this loop. */
+            wxTheApp->Yield(true);
+            wxMilliSleep(15);
+        }
+    }
+    m_toProcessEvents = oldToProcessEvents;
+    worker.join();
+
+    if (done && total) m_loadingOverlay->SetProgress(done->load(), total->load());
+    if (failure) std::rethrow_exception(failure);
+}
+
 void QSPFrame::OpenGameFile(const wxString& fullPath)
 {
+    QSPLoadingScope loading(this, _("Opening the game"), wxFileName(fullPath).GetFullName());
+
     /* Existing is not the same as readable: another program may be holding the
        file open while it writes it, and an empty file is not a world. */
     std::vector<char> world;
-    if (!QSPFileIO::Read(fullPath, world) || world.empty()) return;
+    std::atomic<wxFileOffset> read(0), size(0);
+    bool isRead = false;
+    RunLoadingStep([&]() { isRead = QSPFileIO::Read(fullPath, world, read, size); }, &read, &size);
+    if (!isRead || world.empty()) return;
 
-    if (!QSPLoadGameWorldFromData(&world[0], (int)world.size(), QSP_TRUE))
+    /* The long one: tens of megabytes of ciphered text decoded on one core.
+       Off the UI thread because QSPLoadGameWorldFromData is pure - it parses
+       into the engine's own arrays and calls nothing back out - so the only
+       rule to keep is that this thread does not touch the engine meanwhile,
+       which is what RunLoadingStep is for. */
+    loading.SetStage(_("Unpacking the game world"));
+    bool isLoaded = false;
+    RunLoadingStep([&]() {
+        isLoaded = (QSPLoadGameWorldFromData(&world[0], (int)world.size(), QSP_TRUE) != QSP_FALSE);
+    });
+    if (!isLoaded)
     {
         ShowError();
         return;
     }
+    loading.SetStage(_("Starting the game"));
 
     /* Everything below can pump the event loop - reloading settings rebuilds
        the UI, and entering the start location runs game code - so m_toQuit can
@@ -902,9 +1274,20 @@ void QSPFrame::OpenGameFile(const wxString& fullPath)
 
 bool QSPFrame::OpenGameState(const wxString& fullPath)
 {
-    std::vector<char> state;
-    if (!QSPFileIO::Read(fullPath, state) || state.empty()) return false;
+    QSPLoadingScope loading(this, _("Loading the saved game"), wxFileName(fullPath).GetFullName());
 
+    std::vector<char> state;
+    std::atomic<wxFileOffset> read(0), size(0);
+    bool isRead = false;
+    RunLoadingStep([&]() { isRead = QSPFileIO::Read(fullPath, state, read, size); }, &read, &size);
+    if (!isRead || state.empty()) return false;
+
+    /* Not moved off this thread, unlike the world: restoring a save ends by
+       calling back into the GUI - the timer, the input line, the picture, the
+       pane visibility - and finishes by running the game's own ONGLOAD. The
+       overlay still names the step, and a save is the smaller half of the
+       wait in any case. */
+    loading.SetStage(_("Restoring the saved game"));
     if (!QSPOpenSavedGameFromData(&state[0], (int)state.size(), QSP_TRUE))
     {
         ShowError();
@@ -978,7 +1361,10 @@ void QSPFrame::QuickLoadFromSlot()
 wxString QSPFrame::GetCurrentLocationName() const
 {
     QSP_CHAR buffer[512];
-    if (!QSPCalculateStrExpression(QSP_STATIC_STR(QSP_FMT("$CURLOC")), buffer, (int)(sizeof(buffer) / sizeof(buffer[0])), QSP_FALSE))
+    /* QSPMutableString, not QSP_STATIC_STR: the engine upper-cases the
+       expression where it stands before evaluating it, and a string literal
+       lives in read-only memory - writing to it faults. */
+    if (!QSPCalculateStrExpression(QSPMutableString(wxT("$CURLOC")), buffer, (int)(sizeof(buffer) / sizeof(buffer[0])), QSP_FALSE))
         return wxEmptyString;
     return wxString(buffer);
 }
@@ -1272,8 +1658,6 @@ void QSPFrame::OnSelectFontColor(wxCommandEvent& WXUNUSED(event))
     if (dialog.ShowModal() == wxID_OK)
     {
         m_fontColor = dialog.GetColourData().GetColour();
-        /* An explicit choice stops the desktop theme overwriting it */
-        SetUseSystemColors(false);
         if (m_toProcessEvents)
             ApplyParams();
         else
@@ -1293,8 +1677,6 @@ void QSPFrame::OnSelectBackColor(wxCommandEvent& WXUNUSED(event))
     if (dialog.ShowModal() == wxID_OK)
     {
         m_backColor = dialog.GetColourData().GetColour();
-        /* An explicit choice stops the desktop theme overwriting it */
-        SetUseSystemColors(false);
         if (m_toProcessEvents)
             ApplyParams();
         else
@@ -1314,8 +1696,6 @@ void QSPFrame::OnSelectLinkColor(wxCommandEvent& WXUNUSED(event))
     if (dialog.ShowModal() == wxID_OK)
     {
         m_linkColor = dialog.GetColourData().GetColour();
-        /* An explicit choice stops the desktop theme overwriting it */
-        SetUseSystemColors(false);
         if (m_toProcessEvents)
             ApplyParams();
         else
@@ -1326,19 +1706,31 @@ void QSPFrame::OnSelectLinkColor(wxCommandEvent& WXUNUSED(event))
     }
 }
 
-void QSPFrame::OnUseSystemColors(wxCommandEvent& event)
+void QSPFrame::OnSelectTheme(wxCommandEvent& event)
 {
-    m_toUseSystemColors = event.IsChecked();
-    ApplySystemColors();
+    switch (event.GetId())
+    {
+    case ID_LIGHTTHEME: SetColorTheme(QSP_THEME_LIGHT); break;
+    case ID_DARKTHEME: SetColorTheme(QSP_THEME_DARK); break;
+    default: SetColorTheme(QSP_THEME_SYSTEM); break;
+    }
+    ApplyThemeToDockArt();
+    /* The menus, the dropdowns and the common dialogs are Windows' own, and
+       it only takes that decision while the player has no window open yet -
+       so a switch away from what they are showing is honoured on the next
+       start. Said here rather than left as a surprise. */
+    if (IsDarkTheme() != wxSystemSettings::GetAppearance().IsDark())
+        ShowToast(_("Menus and dialogs follow when the player is restarted"));
 }
 
 /* The desktop switched between light and dark while the player was running.
    wxWidgets sends this to every window; only the frame acts on it, because the
-   panes take their colours from here. */
+   captions are drawn from here - and only while the desktop is what the player
+   is following. */
 void QSPFrame::OnSysColourChanged(wxSysColourChangedEvent& event)
 {
     event.Skip();
-    ApplySystemColors();
+    if (m_colorTheme == QSP_THEME_SYSTEM) ApplyThemeToDockArt();
 }
 
 void QSPFrame::OnCheckUpdatesOnStartup(wxCommandEvent& WXUNUSED(event))
@@ -1776,6 +2168,57 @@ void QSPFrame::OnMouseClick(wxMouseEvent& event)
 {
     event.Skip();
     m_keyPressedWhileDisabled = true;
+}
+
+void QSPFrame::OnSize(wxSizeEvent& event)
+{
+    event.Skip();
+    RescaleDocks();
+}
+
+/* wxAUI sizes a dock in pixels and leaves it there, so the centre pane takes
+   every pixel a resize adds: the same layout that fits a small window leaves
+   a thin strip of actions and objects around a vast description on a large
+   one. Each dock is given back the share of the window it had instead, so
+   what the player set up is what they keep at any size.
+
+   The input row is left out of it - it holds one line of text, and a line of
+   text does not get taller because the window did. */
+void QSPFrame::RescaleDocks()
+{
+    if (m_isRescalingDocks || !m_manager) return;
+
+    wxSize size(GetClientSize());
+    if (size.GetWidth() < 1 || size.GetHeight() < 1) return;
+    if (size == m_lastLayoutSize) return;
+    if (m_lastLayoutSize.GetWidth() < 1)
+    {
+        /* Nothing to scale from yet: this is the size the layout starts at */
+        m_lastLayoutSize = size;
+        return;
+    }
+    /* A maximized pane covers the docks entirely and its own saved sizes are
+       what a restore brings back, so they are left alone until it is. */
+    const wxAuiPaneInfoArray& panes = m_manager->GetAllPanes();
+    for (size_t i = 0; i < panes.GetCount(); ++i)
+    {
+        if (panes[i].IsMaximized())
+        {
+            m_lastLayoutSize = size;
+            return;
+        }
+    }
+
+    wxArrayString fixedPanes;
+    fixedPanes.Add(wxT("input"));
+    wxString perspective(m_manager->SavePerspective());
+    wxString rescaled(m_dockLayout.Rescale(perspective, m_lastLayoutSize, size, fixedPanes));
+    m_lastLayoutSize = size;
+    if (rescaled == perspective) return;
+
+    m_isRescalingDocks = true;
+    m_manager->LoadPerspective(rescaled, true);
+    m_isRescalingDocks = false;
 }
 
 void QSPFrame::OnPaneClose(wxAuiManagerEvent& event)

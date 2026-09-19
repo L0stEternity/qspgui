@@ -18,10 +18,13 @@
 #include "msgdlg.h"
 #include "comtools.h"
 
+#include <wx/clipbrd.h>
+
 wxIMPLEMENT_CLASS(QSPMsgDlg, wxDialog);
 
 BEGIN_EVENT_TABLE(QSPMsgDlg, wxDialog)
     EVT_HTML_LINK_CLICKED(ID_MSG_DESC, QSPMsgDlg::OnLinkClicked)
+    EVT_BUTTON(ID_MSG_COPY, QSPMsgDlg::OnCopy)
     EVT_INIT_DIALOG(QSPMsgDlg::OnInitDialog)
 END_EVENT_TABLE()
 
@@ -50,17 +53,29 @@ QSPMsgDlg::QSPMsgDlg(wxWindow* parent,
     sizerUp->Add(m_desc, 1, wxALL | wxGROW, 2);
     sizerUp->Add(line, 0, wxALL | wxGROW, 2);
     // ----------
+    /* Copy on the left, away from OK on the right: the two do unrelated
+       things, and a reader dismissing the dialog should not land on the one
+       that does not dismiss it. */
     wxSizer *sizerBottom = new wxBoxSizer(wxHORIZONTAL);
+    /* Built now and hidden, so a caller that has something worth copying only
+       has to hand the text over; the layout is already sized for it. */
+    m_btnCopy = new wxButton(this, ID_MSG_COPY, _("&Copy details"));
+    m_btnCopy->SetFont(font);
+    m_btnCopy->SetBackgroundColour(backColor);
+    m_btnCopy->SetForegroundColour(fontColor);
+    m_btnCopy->Hide();
+    sizerBottom->Add(m_btnCopy, 0, wxALL, 8);
+    sizerBottom->AddStretchSpacer(1);
     wxButton *btnOk = new wxButton(this, wxID_OK, _("OK"));
     btnOk->SetDefault();
     btnOk->SetFont(font);
     btnOk->SetBackgroundColour(backColor);
     btnOk->SetForegroundColour(fontColor);
-    sizerBottom->Add(btnOk, 0, wxALL, 2);
+    sizerBottom->Add(btnOk, 0, wxALL, 8);
     // ----------
     wxSizer *sizerMain = new wxBoxSizer(wxVERTICAL);
     sizerMain->Add(sizerUp, 1, wxGROW, 0);
-    sizerMain->Add(sizerBottom, 0, wxALIGN_RIGHT, 0);
+    sizerMain->Add(sizerBottom, 0, wxGROW, 0);
     // ----------
     sizerMain->SetMinSize(MinWidth, MinHeight);
     SetSizerAndFit(sizerMain);
@@ -77,6 +92,31 @@ void QSPMsgDlg::OnInitDialog(wxInitDialogEvent& WXUNUSED(event))
     width = wxMin(wxMax(width, MinWidth), MaxWidth);
     SetClientSize(width, height);
     Center();
+}
+
+void QSPMsgDlg::SetCopyText(const wxString& text)
+{
+    m_copyText = text;
+    m_btnCopy->Show(!text.IsEmpty());
+    Layout();
+}
+
+void QSPMsgDlg::OnCopy(wxCommandEvent& WXUNUSED(event))
+{
+    if (m_copyText.IsEmpty()) return;
+
+    /* wxClipboardLocker rather than Open/Close by hand: another program can be
+       holding the clipboard, and then this must simply do nothing rather than
+       leave it open behind a dialog the reader is about to dismiss. */
+    wxClipboardLocker locker;
+    if (!locker) return;
+
+    wxTheClipboard->SetData(new wxTextDataObject(m_copyText));
+    wxTheClipboard->Flush();
+    /* Said on the button itself: a dialog that answers a dialog to report that
+       a copy worked is one dialog too many. */
+    m_btnCopy->SetLabel(_("Copied"));
+    m_btnCopy->Disable();
 }
 
 void QSPMsgDlg::OnLinkClicked(wxHtmlLinkEvent& event)

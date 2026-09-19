@@ -21,7 +21,9 @@
 #include "comtools.h"
 
 #include <wx/base64.h>
+#include <algorithm>
 #include <set>
+#include <string.h>
 #include <limits.h>
 #include <wx/file.h>
 #include <wx/filename.h>
@@ -35,7 +37,8 @@ namespace QSPDev
 enum
 {
     ID_DEV_SERVER = wxID_HIGHEST + 900,
-    ID_DEV_CLIENT
+    ID_DEV_CLIENT,
+    ID_DEV_MONITOR
 };
 
 #define QSP_DEV_PROTOCOL 1
@@ -45,6 +48,15 @@ enum
    counter rather than gigabytes of queued JSON. */
 #define QSP_DEV_TRACELIMIT 2000
 #define QSP_DEV_MAXVALUES 32
+/* A profile keeps one record per distinct line, not per execution, so the cost
+   is the size of the code that ran. The cap is per location and guards against
+   generated code - a DYNAMIC building lines in a loop reports a fresh line
+   number every time. */
+#define QSP_DEV_PROFMAXLINES 4000
+/* The inferred call stack, capped: a wrong guess costs a frame, not a heap */
+#define QSP_DEV_PROFMAXDEPTH 256
+#define QSP_DEV_MONITORINTERVAL 500
+#define QSP_DEV_MONITORMININTERVAL 50
 /* A single request has to fit in one line; "reload" sends a base64 world */
 #define QSP_DEV_MAXREQUEST (96u * 1024u * 1024u)
 /* A client that stops reading while a trace is streaming must not be allowed
@@ -87,10 +99,33 @@ QSPDevServer::QSPDevServer(QSPFrame *frame)
       m_traceLimit(QSP_DEV_TRACELIMIT),
       m_traceDropped(0),
       m_refreshIsNewDesc(false),
+      m_profiling(false),
+      m_profLines(true),
+      m_profMaxLines(QSP_DEV_PROFMAXLINES),
+      m_profStartMs(0.0),
+      m_profStopMs(0.0),
+      m_profSamples(0),
+      m_profDropped(0),
+      m_profSelfMs(0.0),
+      m_profWaitMs(0.0),
+      m_profOpen(false),
+      m_profSampleStart(0.0),
+      m_profSampleLoc(0),
+      m_profSampleLineRec(0),
+      m_monitorOn(false),
+      m_monitorIntervalMs(QSP_DEV_MONITORINTERVAL),
+      m_monitorLastMs(0.0),
+      m_monitorLastSamples(0),
+      m_monitorLastSelfMs(0.0),
+      m_monitorLastWaitMs(0.0),
       m_paused(false),
       m_breakRequested(false),
       m_stepMode(Step_None)
 {
+    m_monitorTimer.SetOwner(this, ID_DEV_MONITOR);
+    Bind(wxEVT_TIMER, &QSPDevServer::OnMonitorTimer, this, ID_DEV_MONITOR);
+    QSPDev::ResetProfCounters();
+    memset(m_monitorLast, 0, sizeof(m_monitorLast));
 }
 
 QSPDevServer::~QSPDevServer()
@@ -152,6 +187,8 @@ void QSPDevServer::Stop()
         m_idleHooked = false;
     }
     SetTracing(false);
+    SetProfiling(false);
+    SetMonitor(false, m_monitorIntervalMs);
     m_breakpoints.clear();
     m_breakRequested = false;
     m_stepMode = Step_None;
@@ -366,6 +403,11 @@ void QSPDevServer::QueueLine(wxSocketBase *socket, const wxString &line)
 
 void QSPDevServer::OnIdle(wxIdleEvent &event)
 {
+    /* Whatever line was open is not running any more - the engine is either
+       between turns or yielding from inside one. Charging it now rather than
+       at the next callback is what keeps a location's last line from being
+       billed for the seconds the player then spent waiting for a click. */
+    if (m_profOpen) CloseProfileSample(QSPDev::IsEngineBusy());
     DrainQueue();
     FlushNotifications();
     for (size_t i = 0; i < m_clients.size(); ++i)
@@ -477,6 +519,15 @@ void QSPDevServer::Dispatch(wxSocketBase *socket, const wxString &line)
         errorText = wxT("Not authorized, call \"hello\" with a token first");
         isOk = false;
     }
+    else if (m_frame->IsBusyLoading())
+    {
+        /* A game world is being rewritten right now, and the editor's command
+           would read or run against half of it. It is told to come back
+           rather than left waiting: the load pumps the event loop, so this
+           request arrived in the middle of one. */
+        errorText = wxT("Busy loading a game, try again in a moment");
+        isOk = false;
+    }
     else
     {
         isOk = Invoke(method, params, result, errorText);
@@ -528,6 +579,8 @@ bool QSPDevServer::Invoke(const wxString &method, const QSPJsonReader &params, Q
     if (method == wxT("setVars")) return CmdSetVars(params, result, errorText);
     if (method == wxT("watch")) return CmdWatch(params, result, errorText);
     if (method == wxT("trace")) return CmdTrace(params, result, errorText);
+    if (method == wxT("profile")) return CmdProfile(params, result, errorText);
+    if (method == wxT("monitor")) return CmdMonitor(params, result, errorText);
     if (method == wxT("break")) return CmdBreak(params, result, errorText);
     if (method == wxT("pause")) return CmdPause(params, result, errorText);
     if (method == wxT("resume")) return CmdResume(params, result, errorText);
@@ -1650,8 +1703,8 @@ void QSPDevServer::SetTracing(bool isOn)
    client has asked for and not yet been given. */
 void QSPDevServer::UpdateDebugHook()
 {
-    bool isWanted = m_tracing || !m_breakpoints.empty() || m_breakRequested ||
-                    m_stepMode != Step_None;
+    bool isWanted = m_tracing || m_profiling || !m_breakpoints.empty() ||
+                    m_breakRequested || m_stepMode != Step_None;
     bool isInstalled = (g_devTraceServer == this);
     if (isWanted == isInstalled) return;
 
@@ -1679,12 +1732,19 @@ void QSPDevServer::OnDebugLine(const wxString &line)
     /* Re-entering from inside the pause loop would nest one pause in another */
     if (m_paused) return;
 
+    /* Read before anything else this function does, so the line that has just
+       finished is charged for its own time and not for the profiler's. */
+    double entered = (m_profiling ? QSPDev::NowMs() : 0.0);
+
     QSPString execLoc;
     int actIndex = -1, lineNum = 0;
     QSPGetCurStateData(&execLoc, &actIndex, &lineNum);
     wxString loc = qspToWxString(execLoc);
 
     if (m_tracing) RecordTrace(loc, actIndex, lineNum, line);
+    /* Last, and it reads the clock again on the way out: the trace above runs
+       on the game's stack but is not the game's cost. */
+    if (m_profiling) ProfileLine(loc, lineNum, line, entered);
 
     wxString reason;
     if (TakeBreakDecision(loc, lineNum, reason))
@@ -1771,6 +1831,524 @@ void QSPDevServer::FlushTrace()
 }
 
 /* ------------------------------------------------------------------ */
+/* Profiling                                                           */
+/* ------------------------------------------------------------------ */
+
+void QSPDevServer::SetProfiling(bool isOn)
+{
+    if (isOn == m_profiling) return;
+
+    if (isOn)
+    {
+        ResetProfile();
+        m_profiling = true;
+        /* The player's own counters ride along: a refresh is the one thing the
+           line profiler cannot see, and it is usually the answer. */
+        QSPDev::g_profOn = true;
+    }
+    else
+    {
+        CloseProfileSample(false);
+        m_profiling = false;
+        m_profStopMs = QSPDev::NowMs();
+        if (!m_monitorOn) QSPDev::g_profOn = false;
+    }
+    UpdateDebugHook();
+}
+
+void QSPDevServer::ResetProfile()
+{
+    m_profLocs.clear();
+    m_profEdges.clear();
+    m_profStack.clear();
+    m_profDepth.clear();
+    m_profSamples = 0;
+    m_profDropped = 0;
+    m_profSelfMs = 0.0;
+    m_profWaitMs = 0.0;
+    m_profOpen = false;
+    m_profSampleLoc = 0;
+    m_profSampleLineRec = 0;
+    m_profStartMs = QSPDev::NowMs();
+    m_profStopMs = 0.0;
+    QSPDev::ResetProfCounters();
+
+    /* A monitor running across this would otherwise diff the fresh counters
+       against the old totals and report one empty window. Re-based here, so
+       its next sample is everything since the reset. */
+    m_monitorLastSamples = 0;
+    m_monitorLastSelfMs = 0.0;
+    m_monitorLastWaitMs = 0.0;
+    memset(m_monitorLast, 0, sizeof(m_monitorLast));
+}
+
+void QSPDevServer::ChargeProfileSample(double now, bool isWait)
+{
+    if (!m_profOpen) return;
+
+    m_profOpen = false;
+    double elapsed = now - m_profSampleStart;
+    /* The clock is monotonic, so this only guards against a caller passing a
+       timestamp taken before the sample was opened. */
+    if (elapsed < 0.0) elapsed = 0.0;
+
+    if (m_profSampleLoc)
+    {
+        if (isWait)
+        {
+            m_profSampleLoc->waitMs += elapsed;
+            m_profWaitMs += elapsed;
+            if (m_profSampleLineRec) m_profSampleLineRec->waitMs += elapsed;
+        }
+        else
+        {
+            m_profSampleLoc->selfMs += elapsed;
+            m_profSelfMs += elapsed;
+            if (m_profSampleLineRec)
+            {
+                m_profSampleLineRec->selfMs += elapsed;
+                if (elapsed > m_profSampleLineRec->maxMs)
+                    m_profSampleLineRec->maxMs = elapsed;
+            }
+        }
+    }
+    m_profSampleLoc = 0;
+    m_profSampleLineRec = 0;
+}
+
+void QSPDevServer::CloseProfileSample(bool isWait)
+{
+    double now = QSPDev::NowMs();
+    ChargeProfileSample(now, isWait);
+    /* Waiting means game code is still on the stack - a SLEEP, a dialog, a
+       forced refresh - so its frames have not returned and are left alone.
+       Otherwise the interpreter is off the stack entirely and all of them
+       have. */
+    if (!isWait) ProfileLeaveTo(0, now);
+}
+
+/* The engine reports where it is, never how it got there: there is no call
+   stack in the public API. One is inferred from the locations the lines arrive
+   from - a line from a location already on the stack is a return to it, and
+   anything else is a call. That is exact for the GOTO and GOSUB chains a game
+   is made of, and approximate in one place: a location that recurses into
+   itself reads as one long stay rather than as nested frames, so its inclusive
+   time is the outermost call's, counted once. Which is what a report wants. */
+void QSPDevServer::ProfileEnter(const wxString &loc, double now)
+{
+    if (!m_profStack.empty() && m_profStack.back().loc == loc) return;
+
+    for (size_t depth = m_profStack.size(); depth > 0; --depth)
+    {
+        if (m_profStack[depth - 1].loc == loc)
+        {
+            ProfileLeaveTo(depth, now);
+            return;
+        }
+    }
+
+    if (!m_profStack.empty())
+        ++m_profEdges[m_profStack.back().loc + wxT(">") + loc];
+    ++m_profLocs[loc].calls;
+
+    /* A guess that goes wrong must cost a lost frame rather than a growing
+       vector. Nothing legitimate nests this deep - the engine's own recursion
+       limit is far below it. */
+    if (m_profStack.size() >= QSP_DEV_PROFMAXDEPTH) return;
+
+    ProfFrame frame;
+    frame.loc = loc;
+    frame.enteredMs = now;
+    m_profStack.push_back(frame);
+    ++m_profDepth[loc];
+}
+
+void QSPDevServer::ProfileLeaveTo(size_t depth, double now)
+{
+    while (m_profStack.size() > depth)
+    {
+        ProfFrame frame = m_profStack.back();
+        m_profStack.pop_back();
+
+        std::map<wxString, int>::iterator it = m_profDepth.find(frame.loc);
+        if (it == m_profDepth.end() || it->second <= 0) continue;
+        --it->second;
+        /* Only the outermost frame contributes, or a recursive location would
+           be charged the same milliseconds once per level. */
+        if (it->second == 0)
+        {
+            double elapsed = now - frame.enteredMs;
+            if (elapsed > 0.0) m_profLocs[frame.loc].inclMs += elapsed;
+        }
+    }
+}
+
+/* Called from the engine's debug callback with the line that is about to run.
+   The time since the last call belongs to the last line, which is what makes
+   the hook a profiler: every line is measured, none are sampled past. */
+void QSPDevServer::ProfileLine(const wxString &loc, int lineNum, const wxString &line, double entered)
+{
+    ChargeProfileSample(entered, false);
+    ProfileEnter(loc, entered);
+
+    LocProfile &locProfile = m_profLocs[loc];
+    ++locProfile.hits;
+    ++m_profSamples;
+
+    LineProfile *lineRecord = 0;
+    std::map<int, LineProfile>::iterator it = locProfile.lines.find(lineNum);
+    if (it != locProfile.lines.end())
+    {
+        lineRecord = &it->second;
+    }
+    else if ((int)locProfile.lines.size() < m_profMaxLines)
+    {
+        lineRecord = &locProfile.lines[lineNum];
+        if (m_profLines) lineRecord->line = line;
+    }
+    else
+    {
+        /* Past the cap the line still counts towards its location, it just
+           gets no record of its own. */
+        ++m_profDropped;
+    }
+    if (lineRecord) ++lineRecord->hits;
+
+    m_profSampleLoc = &locProfile;
+    m_profSampleLineRec = lineRecord;
+    m_profOpen = true;
+    /* Read last: everything above is the profiler's cost, not the game's. */
+    m_profSampleStart = QSPDev::NowMs();
+}
+
+/* One location's row in a report, sorted by whichever column was asked for */
+struct QSPDevProfRow
+{
+    const wxString *loc;
+    const void *data;
+    double key;
+};
+
+static bool QSPDevProfRowLess(const QSPDevProfRow &left, const QSPDevProfRow &right)
+{
+    /* Descending, and by name where the measurements tie, so two reports of
+       the same run come out in the same order. Lines have no name to tie-break
+       with - most of them cost the same unmeasurable nothing - and are sorted
+       stably instead, which leaves them in line-number order. */
+    if (left.key != right.key) return left.key > right.key;
+    if (!left.loc || !right.loc) return false;
+    return *left.loc < *right.loc;
+}
+
+void QSPDevServer::AppendProfileReport(QSPJsonBuilder &result, const wxString &sort,
+                                       int limit, int lineLimit, bool withLines) const
+{
+    double until = (m_profiling || m_profStopMs <= 0.0) ? QSPDev::NowMs() : m_profStopMs;
+    double elapsed = until - m_profStartMs;
+    if (elapsed < 0.0) elapsed = 0.0;
+
+    result.MemberDouble(wxT("elapsedMs"), elapsed);
+    result.MemberInt64(wxT("lines"), m_profSamples);
+    result.MemberDouble(wxT("selfMs"), m_profSelfMs);
+    result.MemberDouble(wxT("waitMs"), m_profWaitMs);
+    result.MemberInt64(wxT("droppedLines"), m_profDropped);
+    result.MemberInt(wxT("locationCount"), (long)m_profLocs.size());
+    result.MemberInt64(wxT("memoryKB"), QSPDev::GetProcessMemoryKB());
+
+    std::vector<QSPDevProfRow> rows;
+    rows.reserve(m_profLocs.size());
+    std::map<wxString, LocProfile>::const_iterator it;
+    for (it = m_profLocs.begin(); it != m_profLocs.end(); ++it)
+    {
+        QSPDevProfRow row;
+        row.loc = &it->first;
+        row.data = &it->second;
+        if (sort == wxT("incl")) row.key = it->second.inclMs;
+        else if (sort == wxT("wait")) row.key = it->second.waitMs;
+        else if (sort == wxT("hits")) row.key = (double)it->second.hits;
+        else if (sort == wxT("calls")) row.key = (double)it->second.calls;
+        else row.key = it->second.selfMs;
+        rows.push_back(row);
+    }
+    std::sort(rows.begin(), rows.end(), QSPDevProfRowLess);
+
+    result.Key(wxT("locations"));
+    result.StartArray();
+    for (size_t i = 0; i < rows.size() && (limit <= 0 || (int)i < limit); ++i)
+    {
+        const LocProfile &locProfile = *(const LocProfile *)rows[i].data;
+        result.StartObject();
+        result.Member(wxT("loc"), *rows[i].loc);
+        result.MemberInt64(wxT("hits"), locProfile.hits);
+        result.MemberInt64(wxT("calls"), locProfile.calls);
+        result.MemberDouble(wxT("selfMs"), locProfile.selfMs);
+        result.MemberDouble(wxT("inclMs"), locProfile.inclMs);
+        result.MemberDouble(wxT("waitMs"), locProfile.waitMs);
+        result.MemberDouble(wxT("selfPct"),
+            m_profSelfMs > 0.0 ? locProfile.selfMs * 100.0 / m_profSelfMs : 0.0, 2);
+        if (!withLines)
+        {
+            result.MemberInt(wxT("lineCount"), (long)locProfile.lines.size());
+            result.EndObject();
+            continue;
+        }
+
+        std::vector<QSPDevProfRow> lineRows;
+        lineRows.reserve(locProfile.lines.size());
+        std::map<int, LineProfile>::const_iterator lineIt;
+        for (lineIt = locProfile.lines.begin(); lineIt != locProfile.lines.end(); ++lineIt)
+        {
+            QSPDevProfRow row;
+            row.loc = 0;
+            row.data = &(*lineIt);
+            row.key = (sort == wxT("hits") ? (double)lineIt->second.hits
+                                           : lineIt->second.selfMs + lineIt->second.waitMs);
+            lineRows.push_back(row);
+        }
+        /* By cost, but stably, so the line numbers of equally cheap lines stay
+           in the order the map holds them - QSPDevProfRowLess cannot break the
+           tie here, there being no name to break it with. */
+        std::stable_sort(lineRows.begin(), lineRows.end(), QSPDevProfRowLess);
+
+        result.Key(wxT("lines"));
+        result.StartArray();
+        for (size_t j = 0; j < lineRows.size() && (lineLimit <= 0 || (int)j < lineLimit); ++j)
+        {
+            const std::pair<const int, LineProfile> &entry =
+                *(const std::pair<const int, LineProfile> *)lineRows[j].data;
+            result.StartObject();
+            result.MemberInt(wxT("lineNum"), (long)entry.first);
+            result.MemberInt64(wxT("hits"), entry.second.hits);
+            result.MemberDouble(wxT("selfMs"), entry.second.selfMs);
+            result.MemberDouble(wxT("maxMs"), entry.second.maxMs);
+            if (entry.second.waitMs > 0.0)
+                result.MemberDouble(wxT("waitMs"), entry.second.waitMs);
+            if (!entry.second.line.IsEmpty())
+                result.Member(wxT("line"), entry.second.line);
+            result.EndObject();
+        }
+        result.EndArray();
+        result.MemberBool(wxT("truncated"),
+                          lineLimit > 0 && (int)lineRows.size() > lineLimit);
+        result.EndObject();
+    }
+    result.EndArray();
+    result.MemberBool(wxT("truncated"), limit > 0 && (int)rows.size() > limit);
+
+    /* The call graph, as edges rather than a tree: a tree would have to be
+       rebuilt for every root, and an editor drawing a flame graph or an arrow
+       between two boxes wants the edges anyway. */
+    result.Key(wxT("edges"));
+    result.StartArray();
+    std::map<wxString, long long>::const_iterator edgeIt;
+    for (edgeIt = m_profEdges.begin(); edgeIt != m_profEdges.end(); ++edgeIt)
+    {
+        int split = edgeIt->first.Find(wxT('>'));
+        if (split == wxNOT_FOUND) continue;
+        result.StartObject();
+        result.Member(wxT("from"), edgeIt->first.Left(split));
+        result.Member(wxT("to"), edgeIt->first.Mid(split + 1));
+        result.MemberInt64(wxT("calls"), edgeIt->second);
+        result.EndObject();
+    }
+    result.EndArray();
+
+    /* What the interpreter asked the player to do, which the line profiler
+       sees only as time passing inside a line. */
+    result.Key(wxT("counters"));
+    result.StartArray();
+    for (int i = 0; i < QSPDev::Prof_CounterCount; ++i)
+    {
+        const QSPDev::ProfCounterData &counter = QSPDev::g_profCounters[i];
+        if (!counter.count) continue;
+        result.StartObject();
+        result.Member(wxT("name"), QSPDev::GetProfCounterName(i));
+        result.MemberInt64(wxT("count"), counter.count);
+        result.MemberDouble(wxT("totalMs"), counter.totalMs);
+        result.MemberDouble(wxT("maxMs"), counter.maxMs);
+        if (counter.bytes) result.MemberInt64(wxT("bytes"), counter.bytes);
+        result.EndObject();
+    }
+    result.EndArray();
+}
+
+bool QSPDevServer::CmdProfile(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText)
+{
+    wxString action(params.GetString(wxT("action"), wxT("report")));
+    action.MakeLower();
+
+    bool isChange = (action == wxT("start") || action == wxT("stop") || action == wxT("reset"));
+    if (isChange && m_paused)
+    {
+        /* Turning the hook on or off from inside the hook, with game code held
+           on the stack, is the one thing this must not do. Reading is fine. */
+        errorText = wxT("Profiling cannot be started or stopped while the game is paused");
+        return false;
+    }
+
+    if (action == wxT("start"))
+    {
+        if (params.Has(wxT("lines"))) m_profLines = params.GetBool(wxT("lines"), true);
+        if (params.Has(wxT("maxLines")))
+        {
+            long maxLines = params.GetInt(wxT("maxLines"), QSP_DEV_PROFMAXLINES);
+            if (maxLines < 1) maxLines = 1;
+            m_profMaxLines = (int)maxLines;
+        }
+        /* Always a fresh run: a client that asks to start twice means "from
+           here", not "carry on from whatever was there". */
+        SetProfiling(false);
+        SetProfiling(true);
+    }
+    else if (action == wxT("stop"))
+    {
+        SetProfiling(false);
+    }
+    else if (action == wxT("reset"))
+    {
+        ResetProfile();
+    }
+    else if (action != wxT("report") && action != wxT("status"))
+    {
+        errorText = wxT("Unknown profile action: ") + action;
+        return false;
+    }
+
+    long limit = params.GetInt(wxT("limit"), 50);
+    long lineLimit = params.GetInt(wxT("lineLimit"), 50);
+    bool withLines = params.GetBool(wxT("withLines"), true);
+    wxString sort(params.GetString(wxT("sort"), wxT("self")));
+    sort.MakeLower();
+
+    result.StartObject();
+    result.MemberBool(wxT("running"), m_profiling);
+    result.MemberBool(wxT("keepLines"), m_profLines);
+    result.MemberInt(wxT("maxLines"), m_profMaxLines);
+    if (action != wxT("status"))
+        AppendProfileReport(result, sort, (int)limit, (int)lineLimit, withLines);
+    result.EndObject();
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Live monitor                                                        */
+/* ------------------------------------------------------------------ */
+
+void QSPDevServer::SetMonitor(bool isOn, int intervalMs)
+{
+    if (intervalMs < QSP_DEV_MONITORMININTERVAL) intervalMs = QSP_DEV_MONITORMININTERVAL;
+    m_monitorIntervalMs = intervalMs;
+    m_monitorTimer.Stop();
+
+    if (!isOn)
+    {
+        m_monitorOn = false;
+        if (!m_profiling) QSPDev::g_profOn = false;
+        return;
+    }
+
+    m_monitorOn = true;
+    /* The player's counters are what the monitor is made of. They are free
+       enough to leave running for a session; the line hook is not, and is not
+       touched here - a monitor is not a profile. */
+    QSPDev::g_profOn = true;
+    m_monitorLastMs = QSPDev::NowMs();
+    m_monitorLastSamples = m_profSamples;
+    m_monitorLastSelfMs = m_profSelfMs;
+    m_monitorLastWaitMs = m_profWaitMs;
+    memcpy(m_monitorLast, QSPDev::g_profCounters, sizeof(m_monitorLast));
+    m_monitorTimer.Start(m_monitorIntervalMs);
+}
+
+void QSPDevServer::OnMonitorTimer(wxTimerEvent &WXUNUSED(event))
+{
+    FlushMonitor();
+}
+
+/* A window of the counters rather than their totals: what a graph plots is the
+   last half second, and a client that wants totals asks for a report. The
+   timer is the sampler, so the sample keeps arriving while the game sits
+   still - which is the whole point of a monitor as against a profile. */
+void QSPDevServer::FlushMonitor()
+{
+    if (!m_monitorOn || m_clients.empty()) return;
+
+    double now = QSPDev::NowMs();
+    double window = now - m_monitorLastMs;
+    if (window <= 0.0) return;
+
+    QSPJsonBuilder params;
+    params.StartObject();
+    params.MemberDouble(wxT("windowMs"), window);
+    params.MemberBool(wxT("profiling"), m_profiling);
+    params.MemberBool(wxT("busy"), QSPDev::IsEngineBusy());
+
+    /* Line counts only mean anything while the line hook is installed. They
+       are reported as zero rather than left out, so a client graphing them
+       does not have to special-case the gap. */
+    long long lines = m_profSamples - m_monitorLastSamples;
+    double selfMs = m_profSelfMs - m_monitorLastSelfMs;
+    double waitMs = m_profWaitMs - m_monitorLastWaitMs;
+    if (lines < 0) lines = 0;
+    if (selfMs < 0.0) selfMs = 0.0;
+    if (waitMs < 0.0) waitMs = 0.0;
+    params.MemberInt64(wxT("lines"), lines);
+    params.MemberDouble(wxT("linesPerSec"), lines * 1000.0 / window, 0);
+    params.MemberDouble(wxT("selfMs"), selfMs);
+    params.MemberDouble(wxT("waitMs"), waitMs);
+    /* How much of the window the player spent inside the interpreter. A game
+       that pegs this is one that never lets the UI breathe. */
+    params.MemberDouble(wxT("busyPct"), selfMs * 100.0 / window, 1);
+    params.MemberInt64(wxT("memoryKB"), QSPDev::GetProcessMemoryKB());
+
+    params.Key(wxT("counters"));
+    params.StartArray();
+    for (int i = 0; i < QSPDev::Prof_CounterCount; ++i)
+    {
+        const QSPDev::ProfCounterData &counter = QSPDev::g_profCounters[i];
+        long long count = counter.count - m_monitorLast[i].count;
+        double totalMs = counter.totalMs - m_monitorLast[i].totalMs;
+        long long bytes = counter.bytes - m_monitorLast[i].bytes;
+        /* A reset between two ticks leaves these negative; the window is then
+           simply reported as empty rather than as a spike downwards. */
+        if (count <= 0 || totalMs < 0.0) continue;
+        params.StartObject();
+        params.Member(wxT("name"), QSPDev::GetProfCounterName(i));
+        params.MemberInt64(wxT("count"), count);
+        params.MemberDouble(wxT("totalMs"), totalMs);
+        params.MemberDouble(wxT("maxMs"), counter.maxMs);
+        if (bytes > 0) params.MemberInt64(wxT("bytes"), bytes);
+        params.EndObject();
+    }
+    params.EndArray();
+    params.EndObject();
+
+    m_monitorLastMs = now;
+    m_monitorLastSamples = m_profSamples;
+    m_monitorLastSelfMs = m_profSelfMs;
+    m_monitorLastWaitMs = m_profWaitMs;
+    memcpy(m_monitorLast, QSPDev::g_profCounters, sizeof(m_monitorLast));
+
+    Notify(wxT("perf"), params.GetText());
+}
+
+bool QSPDevServer::CmdMonitor(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &WXUNUSED(errorText))
+{
+    long interval = params.GetInt(wxT("intervalMs"), m_monitorIntervalMs);
+    if (params.Has(wxT("enabled")))
+        SetMonitor(params.GetBool(wxT("enabled"), true), (int)interval);
+    else if (m_monitorOn && interval != m_monitorIntervalMs)
+        SetMonitor(true, (int)interval);
+
+    result.StartObject();
+    result.MemberBool(wxT("enabled"), m_monitorOn);
+    result.MemberInt(wxT("intervalMs"), m_monitorIntervalMs);
+    result.MemberBool(wxT("profiling"), m_profiling);
+    result.EndObject();
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* Breakpoints and stepping                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1849,6 +2427,10 @@ void QSPDevServer::EnterPause(const wxString &reason, const wxString &loc, int a
     if (m_paused || m_clients.empty()) return;
 
     m_paused = true;
+    /* Held time is the debugger's, not the game's. The sample is closed rather
+       than charged to the line, so a profile taken across a breakpoint reads
+       the same as one taken without. */
+    ChargeProfileSample(QSPDev::NowMs(), true);
 
     /* Sent before the loop starts, and flushed by hand: the client is waiting
        to be told where the game stopped, and nothing else will push it out. */
@@ -1973,8 +2555,12 @@ void QSPDevServer::HandlePausedLine(wxSocketBase *socket, const wxString &line)
    reason. */
 bool QSPDevServer::IsPauseSafeMethod(const wxString &method)
 {
+    /* "profile" and "monitor" only read counters the player keeps for itself,
+       so they are safe here; starting or stopping the profiler is not, and
+       CmdProfile refuses that while paused rather than the dispatch doing it. */
     return method == wxT("resume") || method == wxT("pause") || method == wxT("break") ||
-           method == wxT("ping") || method == wxT("hello") || method == wxT("getVar");
+           method == wxT("ping") || method == wxT("hello") || method == wxT("getVar") ||
+           method == wxT("profile") || method == wxT("monitor");
 }
 
 bool QSPDevServer::CmdBreak(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText)

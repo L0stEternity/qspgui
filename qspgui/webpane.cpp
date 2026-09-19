@@ -17,6 +17,7 @@
 
 #include "webpane.h"
 #include "comtools.h"
+#include "devprofile.h"
 
 #include <wx/html/htmlwin.h>
 #include <wx/filename.h>
@@ -448,7 +449,15 @@ void QSPWebPane::RunScript(const wxString& script)
     /* Always async: QSP callbacks run inside engine script execution, and the
        synchronous variant pumps a nested message loop, which re-enters it. */
     if (m_isShellReady && m_view && !script.IsEmpty())
+    {
+        /* Timed for the profiler. Being async, what this measures is the cost
+           of handing the script over - marshalling a document that has grown
+           to a megabyte still shows up, the browser's own render does not. The
+           bytes are the more telling half. */
+        QSPDev::ProfScope scriptScope(QSPDev::Prof_Script);
+        scriptScope.AddBytes((long long)script.length());
         m_view->RunScriptAsync(script);
+    }
 }
 
 void QSPWebPane::SetPaneName(const wxString& name)

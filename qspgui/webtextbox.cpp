@@ -455,7 +455,6 @@ void QSPWebTextBox::SetText(const wxString& text, bool toScroll)
         }
         m_text = text;
         m_toScroll = toScroll;
-        SetupGameFolderAccess();
         MarkDirty();
     }
 }
@@ -465,7 +464,6 @@ void QSPWebTextBox::LoadBackImage(const wxString& imagePath)
     if (m_backImagePath != imagePath)
     {
         m_backImagePath = imagePath;
-        SetupGameFolderAccess();
         MarkDirty();
     }
 }

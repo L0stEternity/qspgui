@@ -67,12 +67,16 @@
         void Key(const wxString &key);
         void ValueString(const wxString &value);
         void ValueInt(long value);
+        void ValueInt64(wxLongLong_t value);
+        void ValueDouble(double value, int decimals = 3);
         void ValueBool(bool value);
         void ValueNull();
         void ValueRaw(const wxString &json);
 
         void Member(const wxString &key, const wxString &value);
         void MemberInt(const wxString &key, long value);
+        void MemberInt64(const wxString &key, wxLongLong_t value);
+        void MemberDouble(const wxString &key, double value, int decimals = 3);
         void MemberBool(const wxString &key, bool value);
 
         const wxString &GetText() const { return m_out; }

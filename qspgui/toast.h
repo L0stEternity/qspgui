@@ -30,6 +30,11 @@
     /* A short-lived message shown over the player, used where a modal dialog
        would interrupt play for something the user does not have to answer.
 
+       It is drawn the way the rest of the player is: a panel in the theme's
+       own colours, with a chiselled border and a hand-drawn symbol, sitting in
+       the bottom right corner of the window until it has been read. No rounded
+       corners, no fading - this is a status message, not a notification.
+
        It is a floating frame rather than a child window on purpose: the
        description panes can be a real browser, whose own window would paint
        over any sibling we put on top of it. */
@@ -46,12 +51,20 @@
            status reports, and only the latest one is worth reading. */
         void Pop(const wxString &text, QSPToastKind kind = QSP_TOAST_INFO);
         void Dismiss();
+        /* The player's own palette, so a message belongs to the window it
+           appears over whichever theme is in use. The desktop's tooltip
+           colours stand in until the settings have been read. */
+        void SetColors(const wxColour &back, const wxColour &text);
 
     protected:
         // Internal methods
         void Relayout();
         void Reposition();
-        wxColour GetAccentColor() const;
+        /* The symbol's colour, dark on a light panel and light on a dark one */
+        wxColour GetKindColor() const;
+        /* The check mark, the "i" and the "!", drawn rather than typed: the
+           user's font is not guaranteed to have any of them. */
+        void DrawKindSymbol(wxDC &dc, const wxRect &rect) const;
 
         // Events
         void OnPaint(wxPaintEvent& event);
@@ -63,8 +76,9 @@
         wxString m_text;
         QSPToastKind m_kind;
         wxTimer m_timer;
-        int m_holdLeft; /* msecs left before the toast starts fading */
-        int m_alpha;
+        int m_holdLeft; /* msecs left before the toast goes away */
+        wxColour m_backColor;
+        wxColour m_textColor;
     };
 
 #endif

@@ -70,6 +70,45 @@ bool QSPFileIO::Read(const wxString &path, std::vector<char> &data)
     return file.Read(&data[0], data.size()) == (ssize_t)data.size();
 }
 
+bool QSPFileIO::Read(const wxString &path, std::vector<char> &data,
+                     std::atomic<wxFileOffset> &done, std::atomic<wxFileOffset> &total)
+{
+    /* Big enough that the syscalls are not what costs, small enough that a
+       40 MB file still reports forty times on the way through */
+    const size_t chunkSize = 1024 * 1024;
+
+    data.clear();
+    done = 0;
+    total = 0;
+
+    wxFile file(path, wxFile::read);
+    if (!file.IsOpened()) return false;
+
+    wxFileOffset length = file.Length();
+    if (length == wxInvalidOffset) return false;
+    total = length;
+    if (length == 0) return true;
+    if (length > (wxFileOffset)INT_MAX) return false;
+
+    data.resize((size_t)length);
+    size_t offset = 0;
+    while (offset < data.size())
+    {
+        size_t want = wxMin(chunkSize, data.size() - offset);
+        ssize_t got = file.Read(&data[offset], want);
+        if (got != (ssize_t)want)
+        {
+            /* A short read is a broken file, not a shorter one: the caller
+               asked for the whole thing and must not be handed a prefix. */
+            data.clear();
+            return false;
+        }
+        offset += want;
+        done = (wxFileOffset)offset;
+    }
+    return true;
+}
+
 bool QSPFileIO::Write(const wxString &path, const void *data, size_t size)
 {
     wxFile file(path, wxFile::write);
@@ -332,6 +371,156 @@ wxString QSPTools::GetPlatform()
 wxString QSPTools::GetVersion(const wxString& libVersion)
 {
     return wxString::Format(wxT("%s (classic)"), libVersion.wx_str());
+}
+
+namespace
+{
+
+/* The parts of a perspective are separated by '|', but a '|' inside a pane's
+   name or caption is escaped as "\|" - so a split has to look at what comes
+   before the separator, not only at the separator. The escapes are left in
+   place, so joining the parts back with '|' reproduces the original. */
+wxArrayString SplitPerspective(const wxString &perspective)
+{
+    wxArrayString parts;
+    wxString current;
+    bool isEscaped = false;
+    for (size_t i = 0; i < perspective.Length(); ++i)
+    {
+        wxChar ch = perspective[i];
+        if (isEscaped)
+        {
+            current += ch;
+            isEscaped = false;
+        }
+        else if (ch == wxT('\\'))
+        {
+            current += ch;
+            isEscaped = true;
+        }
+        else if (ch == wxT('|'))
+        {
+            parts.Add(current);
+            current.Clear();
+        }
+        else
+            current += ch;
+    }
+    parts.Add(current);
+    return parts;
+}
+
+/* "dock_size(direction,layer,row)=size". The key is the coordinates as they
+   were written, which is enough to match a dock across calls. */
+bool ParseDockSize(const wxString &part, wxString *key, int *direction, int *size)
+{
+    if (!part.StartsWith(wxT("dock_size(")))
+        return false;
+
+    wxString coords(part.AfterFirst(wxT('(')).BeforeFirst(wxT(')')));
+    long dirValue, sizeValue;
+    if (!coords.BeforeFirst(wxT(',')).ToLong(&dirValue)) return false;
+    if (!part.AfterFirst(wxT('=')).ToLong(&sizeValue)) return false;
+
+    *key = coords;
+    *direction = (int)dirValue;
+    *size = (int)sizeValue;
+    return true;
+}
+
+/* A pane's entry: its name, and the coordinates of the dock holding it in the
+   same form ParseDockSize reports. */
+bool ParsePaneDock(const wxString &part, wxString *name, wxString *key)
+{
+    if (part.StartsWith(wxT("dock_size(")))
+        return false;
+
+    wxString rest(part), paneName, direction, layer, row;
+    while (!rest.IsEmpty())
+    {
+        wxString field(rest.BeforeFirst(wxT(';')));
+        rest = rest.AfterFirst(wxT(';'));
+        wxString fieldName(field.BeforeFirst(wxT('=')));
+        wxString fieldValue(field.AfterFirst(wxT('=')));
+        if (fieldName == wxT("name")) paneName = fieldValue;
+        else if (fieldName == wxT("dir")) direction = fieldValue;
+        else if (fieldName == wxT("layer")) layer = fieldValue;
+        else if (fieldName == wxT("row")) row = fieldValue;
+    }
+    if (paneName.IsEmpty() || direction.IsEmpty() || layer.IsEmpty() || row.IsEmpty())
+        return false;
+
+    *name = paneName;
+    *key = direction + wxT(",") + layer + wxT(",") + row;
+    return true;
+}
+
+} // anonymous namespace
+
+void QSPDockLayout::Reset()
+{
+    m_fractions.clear();
+    m_applied.clear();
+}
+
+wxString QSPDockLayout::Rescale(const wxString &perspective, const wxSize &oldSize, const wxSize &newSize,
+                                const wxArrayString &fixedPanes)
+{
+    if (oldSize.GetWidth() < 1 || oldSize.GetHeight() < 1 ||
+        newSize.GetWidth() < 1 || newSize.GetHeight() < 1)
+        return perspective;
+
+    wxArrayString parts(SplitPerspective(perspective));
+    wxArrayString fixedDocks;
+    for (size_t i = 0; i < parts.GetCount(); ++i)
+    {
+        wxString name, key;
+        if (ParsePaneDock(parts[i], &name, &key) && fixedPanes.Index(name) != wxNOT_FOUND)
+            fixedDocks.Add(key);
+    }
+
+    bool isChanged = false;
+    for (size_t i = 0; i < parts.GetCount(); ++i)
+    {
+        wxString key;
+        int direction, size;
+        if (!ParseDockSize(parts[i], &key, &direction, &size)) continue;
+        /* 1 top, 2 right, 3 bottom, 4 left. 5 is the centre, which has no
+           size of its own - it is whatever the others leave. */
+        if (direction < 1 || direction > 4) continue;
+        if (fixedDocks.Index(key) != wxNOT_FOUND) continue;
+
+        bool isVertical = (direction == 1 || direction == 3);
+        int oldDim = (isVertical ? oldSize.GetHeight() : oldSize.GetWidth());
+        int newDim = (isVertical ? newSize.GetHeight() : newSize.GetWidth());
+
+        std::map<wxString, double>::const_iterator fraction = m_fractions.find(key);
+        std::map<wxString, int>::const_iterator applied = m_applied.find(key);
+        /* Anything but the size we last wrote means the sash was dragged, so
+           the share the user left it at is the one to keep from now on. */
+        double share = ((fraction == m_fractions.end() || applied == m_applied.end() || applied->second != size)
+            ? (double)size / oldDim
+            : fraction->second);
+
+        int scaled = (int)(share * newDim + 0.5);
+        if (scaled < 1) scaled = 1;
+        m_fractions[key] = share;
+        m_applied[key] = scaled;
+        if (scaled != size)
+        {
+            parts[i] = wxString::Format(wxT("dock_size(%s)=%d"), key, scaled);
+            isChanged = true;
+        }
+    }
+    if (!isChanged) return perspective;
+
+    wxString result;
+    for (size_t i = 0; i < parts.GetCount(); ++i)
+    {
+        if (i) result += wxT("|");
+        result += parts[i];
+    }
+    return result;
 }
 
 /* A QSP single-quoted literal holding an arbitrary value. Quotes double,

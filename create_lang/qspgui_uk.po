@@ -353,6 +353,15 @@ msgstr "Не вдалося записати швидке збереження"
 msgid "Follow s&ystem light / dark theme"
 msgstr "Дотримуватися с&истемної світлої / темної теми"
 
+msgid "Li&ght theme"
+msgstr "С&вітла тема"
+
+msgid "Dar&k theme"
+msgstr "Те&мна тема"
+
+msgid "Menus and dialogs follow when the player is restarted"
+msgstr "Меню та діалоги зміняться після перезапуску плеєра"
+
 msgid "Save to slo&t"
 msgstr "Зберегти у сло&т"
 
@@ -376,3 +385,27 @@ msgstr "Слот %d порожній"
 
 msgid "Loaded slot %d"
 msgstr "Завантажено слот %d"
+
+msgid "&Copy details"
+msgstr "&Копіювати подробиці"
+
+msgid "Copied"
+msgstr "Скопійовано"
+
+msgid "Opening the game"
+msgstr "Відкриття гри"
+
+msgid "Unpacking the game world"
+msgstr "Розпакування ігрового світу"
+
+msgid "Starting the game"
+msgstr "Запуск гри"
+
+msgid "Loading the saved game"
+msgstr "Завантаження збереження"
+
+msgid "Restoring the saved game"
+msgstr "Відновлення збереження"
+
+msgid "Large games take a while to unpack - %d s so far"
+msgstr "Великі ігри розпаковуються не одразу — минуло %d с"

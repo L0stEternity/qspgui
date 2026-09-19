@@ -377,6 +377,39 @@ void QSPJsonBuilder::ValueInt(long value)
     m_needComma = true;
 }
 
+/* A hit count can pass 2^31 in a single runaway loop, and long is 32 bits on
+   Windows, so counters go out through this rather than ValueInt. */
+void QSPJsonBuilder::ValueInt64(wxLongLong_t value)
+{
+    Separate();
+    m_out += wxString::Format(wxT("%") wxLongLongFmtSpec wxT("d"), value);
+    m_needComma = true;
+}
+
+/* Timings, rounded on the way out: a profile is thousands of numbers, and
+   nobody reads past the third decimal of a millisecond. Values that are not
+   finite - which no measurement here produces, but a division might - go out
+   as null rather than as the JSON-invalid "nan". */
+void QSPJsonBuilder::ValueDouble(double value, int decimals)
+{
+    Separate();
+    if (value != value || value > 1e308 || value < -1e308)
+    {
+        m_out += wxT("null");
+    }
+    else
+    {
+        /* Format honours the C library's locale, and half of Europe writes
+           0,010 - which is two JSON values, not one. The separator is put back
+           by hand rather than by switching the locale, which is process-wide
+           and would be felt by everything else the player is doing. */
+        wxString number(wxString::Format(wxT("%.*f"), decimals, value));
+        number.Replace(wxT(","), wxT("."));
+        m_out += number;
+    }
+    m_needComma = true;
+}
+
 void QSPJsonBuilder::ValueBool(bool value)
 {
     Separate();
@@ -408,6 +441,18 @@ void QSPJsonBuilder::MemberInt(const wxString &key, long value)
 {
     Key(key);
     ValueInt(value);
+}
+
+void QSPJsonBuilder::MemberInt64(const wxString &key, wxLongLong_t value)
+{
+    Key(key);
+    ValueInt64(value);
+}
+
+void QSPJsonBuilder::MemberDouble(const wxString &key, double value, int decimals)
+{
+    Key(key);
+    ValueDouble(value, decimals);
 }
 
 void QSPJsonBuilder::MemberBool(const wxString &key, bool value)

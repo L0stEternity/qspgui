@@ -56,7 +56,8 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("<base id=\"qsp-base\" href=\"\">\n")
         wxT("<style>\n")
         wxT(":root{--qsp-bg:#e0e0e0;--qsp-fg:#000000;--qsp-link:#0000ff;")
-        wxT("--qsp-font:sans-serif;--qsp-size:12pt;}\n")
+        wxT("--qsp-font:sans-serif;--qsp-size:12pt;")
+        wxT("--qsp-sel-bg:#99c9ef;--qsp-sel-fg:#000000;}\n")
         wxT("html,body{margin:0;padding:0;height:100%;}\n")
         wxT("body{background-color:var(--qsp-bg);color:var(--qsp-fg);")
         wxT("font-family:var(--qsp-font);font-size:var(--qsp-size);")
@@ -70,11 +71,11 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT(".qsp-item img{max-height:2.5em;max-width:25%;height:auto;flex:0 0 auto;}\n")
         wxT(".qsp-num{flex:0 0 auto;opacity:0.65;}\n")
         wxT(".qsp-text{flex:1 1 auto;min-width:0;overflow-wrap:break-word;}\n")
-        /* The selection uses the desktop's own highlight colours rather than
-           the game's, the way the classic list does - a game sets the page
-           colours, not the widget's. */
-        wxT(".qsp-item.qsp-sel{background:Highlight;color:HighlightText;}\n")
-        wxT(".qsp-item.qsp-sel a{color:HighlightText;}\n")
+        /* The selection colours are worked out by the host from the page's own
+           ones; see BuildStyleScript for why they cannot simply be the
+           desktop's Highlight and HighlightText. */
+        wxT(".qsp-item.qsp-sel{background:var(--qsp-sel-bg);color:var(--qsp-sel-fg);}\n")
+        wxT(".qsp-item.qsp-sel a{color:var(--qsp-sel-fg);}\n")
         wxT(".qsp-item a{color:var(--qsp-link);}\n")
         /* A game's stylesheet can restyle the lists too; it is inserted here
            so it always wins over the rules above. */
@@ -98,6 +99,7 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("  r.setProperty('--qsp-bg',s.bg);r.setProperty('--qsp-fg',s.fg);\n")
         wxT("  r.setProperty('--qsp-link',s.link);r.setProperty('--qsp-font',s.font);\n")
         wxT("  r.setProperty('--qsp-size',s.size);\n")
+        wxT("  r.setProperty('--qsp-sel-bg',s.selbg);r.setProperty('--qsp-sel-fg',s.selfg);\n")
         wxT("};\n")
         wxT("function paintSelection(){\n")
         wxT("  var nodes=list.children,i;\n")
@@ -259,17 +261,39 @@ wxString QSPWebListBox::BuildItemsScript() const
     return script;
 }
 
+/* The page's colours belong to the game and the desktop's highlight belongs to
+   the desktop, and the two have no reason to agree: a dark player theme gives
+   a dark Highlight, and a game that paints its lists white with black text
+   then loses the row under the mouse entirely - dark on dark, with the game's
+   own black text still on top of it. Tinting the page's own background towards
+   the highlight keeps the selected row obviously selected while it stays on
+   the same side of the page's contrast, so whatever colour the game chose for
+   its text still reads on it. */
+wxColour QSPWebListBox::SelectionColor() const
+{
+    wxColour highlight(wxSystemSettings::GetColour(wxSYS_COLOUR_HIGHLIGHT));
+    if (!highlight.IsOk()) return m_backColor;
+
+    /* Three parts page to two parts highlight: enough of a shift to be seen at
+       a glance, not enough to take the row out of the page's own range. */
+    return wxColour((m_backColor.Red()   * 3 + highlight.Red()   * 2) / 5,
+                    (m_backColor.Green() * 3 + highlight.Green() * 2) / 5,
+                    (m_backColor.Blue()  * 3 + highlight.Blue()  * 2) / 5);
+}
+
 wxString QSPWebListBox::BuildStyleScript() const
 {
     /* Point size rather than pixels, so the lists scale with the font setting
        exactly as the description panes do. */
     return wxString::Format(
-        wxT("qspSetStyle({bg:%s,fg:%s,link:%s,font:%s,size:%s});"),
+        wxT("qspSetStyle({bg:%s,fg:%s,link:%s,font:%s,size:%s,selbg:%s,selfg:%s});"),
         QSPWebUtil::ToJsString(QSPWebUtil::ToCssColor(m_backColor)),
         QSPWebUtil::ToJsString(QSPWebUtil::ToCssColor(m_fontColor)),
         QSPWebUtil::ToJsString(QSPWebUtil::ToCssColor(m_linkColor)),
         QSPWebUtil::ToJsString(m_font.GetFaceName()),
-        QSPWebUtil::ToJsString(wxString::Format(wxT("%dpt"), m_font.GetPointSize())));
+        QSPWebUtil::ToJsString(wxString::Format(wxT("%dpt"), m_font.GetPointSize())),
+        QSPWebUtil::ToJsString(QSPWebUtil::ToCssColor(SelectionColor())),
+        QSPWebUtil::ToJsString(QSPWebUtil::ToCssColor(m_fontColor)));
 }
 
 wxString QSPWebListBox::BuildUserStylesScript() const

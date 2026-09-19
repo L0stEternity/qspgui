@@ -117,6 +117,10 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
 {
     /* A forced refresh yields to the event loop with game code still running */
     QSPDev::EngineScope engineScope;
+    /* Everything below is the player's answer to one line of game code, and
+       none of it is visible to the line profiler except as time passing. A
+       game that refreshes inside a loop finds out here. */
+    QSPDev::ProfScope refreshScope(QSPDev::Prof_Refresh);
     int changedState;
     QSP_BIGINT numVal;
     QSPString strVal;
@@ -138,23 +142,32 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     m_frame->GetDesc()->SetIsHtml(m_isHtml);
     if (changedState & QSP_WIN_MAIN)
     {
+        QSPDev::ProfScope descScope(QSPDev::Prof_MainDesc);
         QSPString mainDesc = QSPGetMainDesc();
+        wxString text(qspToWxString(mainDesc));
+        /* Counted as well as timed: a description that has grown to a megabyte
+           is slow for a reason no timing alone would name. */
+        descScope.AddBytes((long long)text.length());
         // we don't scroll main description if it's completely updated (isNewDesc is true)
-        m_frame->GetDesc()->SetText(qspToWxString(mainDesc), !isNewDesc && toScroll);
+        m_frame->GetDesc()->SetText(text, !isNewDesc && toScroll);
     }
     // -------------------------------
     m_frame->GetVars()->SetIsHtml(m_isHtml);
     if (changedState & QSP_WIN_VARS)
     {
+        QSPDev::ProfScope varsScope(QSPDev::Prof_VarsDesc);
         QSPString varsDesc = QSPGetVarsDesc();
+        wxString text(qspToWxString(varsDesc));
+        varsScope.AddBytes((long long)text.length());
         // we always try to scroll additional description
-        m_frame->GetVars()->SetText(qspToWxString(varsDesc), toScroll);
+        m_frame->GetVars()->SetText(text, toScroll);
     }
     // -------------------------------
     m_frame->GetActions()->SetIsHtml(m_isHtml);
     m_frame->GetActions()->SetToShowNums(m_frame->ToShowHotkeys());
     if (changedState & QSP_WIN_ACTS)
     {
+        QSPDev::ProfScope actionsScope(QSPDev::Prof_Actions);
         QSPListItem items[MAX_LIST_ITEMS];
         int i, actionsCount = QSPGetActions(items, MAX_LIST_ITEMS);
         m_frame->GetActions()->BeginItems();
@@ -166,6 +179,7 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
     m_frame->GetObjects()->SetIsHtml(m_isHtml);
     if (changedState & QSP_WIN_OBJS)
     {
+        QSPDev::ProfScope objectsScope(QSPDev::Prof_Objects);
         QSPObjectItem items[MAX_LIST_ITEMS];
         int i, objectsCount = QSPGetObjects(items, MAX_LIST_ITEMS);
         m_frame->GetObjects()->BeginItems();
@@ -264,6 +278,7 @@ int QSPCallbacks::CloseFile(QSPString file)
 
 int QSPCallbacks::PlayFile(QSPString file, int volume)
 {
+    QSPDev::ProfScope soundScope(QSPDev::Prof_Sound);
     QSPSound snd;
     if (SetVolume(file, volume)) return 0;
     CloseFile(file);
@@ -340,6 +355,7 @@ int QSPCallbacks::Msg(QSPString str)
 {
     /* Yields to the event loop with game code still running */
     QSPDev::EngineScope engineScope;
+    QSPDev::ProfScope dialogScope(QSPDev::Prof_Dialog);
     if (m_frame->ToQuit()) return 0;
     QSPMsgDlg dialog(m_frame,
         wxID_ANY,
@@ -362,6 +378,7 @@ int QSPCallbacks::ShowMenu(QSPListItem *items, int count)
 {
     /* Yields to the event loop with game code still running */
     QSPDev::EngineScope engineScope;
+    QSPDev::ProfScope dialogScope(QSPDev::Prof_Dialog);
     if (m_frame->ToQuit()) return -1;
     m_frame->EnableControls(false);
     m_frame->DeleteMenu();
@@ -376,6 +393,7 @@ int QSPCallbacks::Input(QSPString text, QSP_CHAR *buffer, int maxLen)
 {
     /* Yields to the event loop with game code still running */
     QSPDev::EngineScope engineScope;
+    QSPDev::ProfScope dialogScope(QSPDev::Prof_Dialog);
     if (m_frame->ToQuit()) return 0;
     QSPInputDlg dialog(m_frame,
         wxID_ANY,
@@ -400,6 +418,7 @@ int QSPCallbacks::Input(QSPString text, QSP_CHAR *buffer, int maxLen)
 
 int QSPCallbacks::ShowImage(QSPString file)
 {
+    QSPDev::ProfScope imageScope(QSPDev::Prof_Image);
     if (m_frame->ToQuit()) return 0;
     if (file.Str)
     {
@@ -437,6 +456,7 @@ int QSPCallbacks::OpenGameStatus(QSPString file)
 {
     /* The file dialog below yields to the event loop with game code running */
     QSPDev::EngineScope engineScope;
+    QSPDev::ProfScope saveScope(QSPDev::Prof_SaveLoad);
     if (m_frame->ToQuit()) return 0;
     wxString fullPath;
     if (file.Str)
@@ -465,6 +485,7 @@ int QSPCallbacks::SaveGameStatus(QSPString file)
 {
     /* The file dialog below yields to the event loop with game code running */
     QSPDev::EngineScope engineScope;
+    QSPDev::ProfScope saveScope(QSPDev::Prof_SaveLoad);
     if (m_frame->ToQuit()) return 0;
     wxString fullPath;
     if (file.Str)

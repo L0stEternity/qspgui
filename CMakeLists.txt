@@ -134,6 +134,7 @@ set(QSPGUI_SOURCES
 	qspgui/callbacks_gui.cpp
 	qspgui/comtools.cpp
 	qspgui/devjson.cpp
+	qspgui/devprofile.cpp
 	qspgui/devserver.cpp
 	qspgui/frame.cpp
 	qspgui/imgcanvas.cpp
@@ -141,6 +142,7 @@ set(QSPGUI_SOURCES
 	qspgui/inputbox.cpp
 	qspgui/inputdlg.cpp
 	qspgui/listbox.cpp
+	qspgui/loadingoverlay.cpp
 	qspgui/msgdlg.cpp
 	qspgui/textbox.cpp
 	qspgui/saveslots.cpp
@@ -313,6 +315,7 @@ if (QSPGUI_BUILD_TESTS)
 	add_executable(qspgui_tests
 		tests/testing.cpp
 		tests/test_devjson.cpp
+		tests/test_docklayout.cpp
 		tests/test_fileio.cpp
 		tests/test_paths.cpp
 		tests/test_qspcode.cpp

@@ -353,6 +353,15 @@ msgstr "Ne eblis skribi la rapidan savon"
 msgid "Follow s&ystem light / dark theme"
 msgstr "Sekvi s&isteman helan / malhelan etoson"
 
+msgid "Li&ght theme"
+msgstr "&Hela etoso"
+
+msgid "Dar&k theme"
+msgstr "Mal&hela etoso"
+
+msgid "Menus and dialogs follow when the player is restarted"
+msgstr "Menuoj kaj dialogoj sekvos post rekomenco de la ludilo"
+
 msgid "Save to slo&t"
 msgstr "Konservi en fa&kon"
 
@@ -376,3 +385,27 @@ msgstr "Fako %d estas malplena"
 
 msgid "Loaded slot %d"
 msgstr "Fako %d ŝargita"
+
+msgid "&Copy details"
+msgstr "&Kopii detalojn"
+
+msgid "Copied"
+msgstr "Kopiita"
+
+msgid "Opening the game"
+msgstr "Malfermado de la ludo"
+
+msgid "Unpacking the game world"
+msgstr "Malpakado de la luda mondo"
+
+msgid "Starting the game"
+msgstr "Startigo de la ludo"
+
+msgid "Loading the saved game"
+msgstr "Ŝargado de la konservaĵo"
+
+msgid "Restoring the saved game"
+msgstr "Restarigo de la konservaĵo"
+
+msgid "Large games take a while to unpack - %d s so far"
+msgstr "Grandaj ludoj bezonas tempon por malpakiĝi – %d s ĝis nun"

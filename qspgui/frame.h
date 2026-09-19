@@ -28,7 +28,10 @@
     #include <wx/colordlg.h>
     #include <wx/aboutdlg.h>
     #include <wx/aui/aui.h>
+    #include <atomic>
+    #include <functional>
     #include <qsp_default.h>
+    #include "comtools.h"
     #include "transhelper.h"
     #include "inputbox.h"
     #include "textbox.h"
@@ -38,6 +41,7 @@
     #include "pathprovider.h"
     #include "updateappdialog.h"
     #include "toast.h"
+    #include "loadingoverlay.h"
     #include "saveslots.h"
 
     class QSPDevServer;
@@ -96,7 +100,10 @@
         ID_SELECTFONTCOLOR,
         ID_SELECTBACKCOLOR,
         ID_SELECTLINKCOLOR,
+        /* One radio group: the desktop's choice, or either theme by hand */
         ID_USESYSTEMCOLORS,
+        ID_LIGHTTHEME,
+        ID_DARKTHEME,
         ID_CHECKUPDATESONSTARTUP,
         ID_CHECKUPDATES,
         ID_SELECTLANG,
@@ -117,6 +124,18 @@
         ID_TIMER,
 
         ID_DUMMY
+    };
+
+    /* How the player's own frame is painted - the pane captions, the sashes,
+       the menus and the dialogs. The page, the text and the links are not part
+       of it: those belong to the game, and to the three colour settings next
+       to this one. Stored in the config as a number, so the order is part of
+       the file format. */
+    enum QSPColorTheme
+    {
+        QSP_THEME_SYSTEM = 1,
+        QSP_THEME_LIGHT = 2,
+        QSP_THEME_DARK = 3
     };
 
     enum AppUpdateType
@@ -149,6 +168,8 @@
         int ShowMenu();
         void UpdateGamePath(const wxString &fullPath);
         void UpdateGameFile(const wxString &fullPath);
+        /* Tells every pane the game folder moved; see the definition */
+        void NotifyPanesOfGamePath();
         wxString ComposeGamePath(const wxString &relativePath) const;
         bool IsValidFullPath(const wxString &path) const;
         wxString GetGamePath() const { return m_worldPath; }
@@ -173,6 +194,29 @@
            reading the variable a second time. */
         bool CanSaveGame() const { return m_gameMenu->IsEnabled(ID_SAVEGAMESTAT); }
         void ShowToast(const wxString &text, QSPToastKind kind = QSP_TOAST_INFO);
+
+        /* Opening a game or a saved game, and the overlay that says so.
+           BeginLoading/EndLoading bracket the whole operation - use
+           QSPLoadingScope rather than pairing them by hand - and
+           RunLoadingStep runs one blocking piece of it off the UI thread so
+           the window keeps painting and answering Windows while it goes.
+
+           Only work that calls no engine callback may be handed to
+           RunLoadingStep: reading a file, and QSPLoadGameWorldFromData, which
+           parses and allocates and nothing else. Restoring a saved game does
+           call back into the GUI, so it stays on this thread. */
+        void BeginLoading(const wxString &stage, const wxString &detail);
+        void SetLoadingStage(const wxString &stage);
+        void EndLoading();
+        /* done and total are the step's own published progress, read while it
+           runs; pass none for a step whose length cannot be known. */
+        void RunLoadingStep(const std::function<void()> &work,
+                            std::atomic<wxFileOffset> *done = NULL,
+                            std::atomic<wxFileOffset> *total = NULL);
+        /* True from BeginLoading to EndLoading. The engine's state is being
+           rewritten and nothing outside may touch it - the dev server asks
+           before it acts on anything a connected editor sent. */
+        bool IsBusyLoading() const { return m_isLoading; }
         bool ToShowHotkeys() const { return m_toShowHotkeys; }
         bool ToCheckUpdates() const { return m_toCheckUpdates; }
         bool ToQuit() const { return m_toQuit; }
@@ -183,6 +227,10 @@
     protected:
         // Internal methods
         void ShowError();
+        /* What the copy button on the error dialog puts on the clipboard */
+        wxString BuildErrorReport(const QSPErrorInfo &errorInfo) const;
+        void AppendErrorCode(wxString &report, const QSPErrorInfo &errorInfo,
+                             const wxString &rule) const;
         void UpdateTitle();
         void ReCreateGUI();
         void RefreshUI();
@@ -191,12 +239,15 @@
         bool ApplyFontName(const wxString& name);
         bool ApplyFontColor(const wxColour& color);
         bool ApplyBackColor(const wxColour& color);
-        /* The palette the current desktop appearance calls for */
-        static void GetAppearanceColors(wxColour &back, wxColour &font, wxColour &link);
-        /* Push that palette into the panes; no-op unless it is being followed */
-        void ApplySystemColors();
-        /* Keeps the flag and the menu check mark in step */
-        void SetUseSystemColors(bool toUse);
+        /* Whether the theme in force is a dark one */
+        bool IsDarkTheme() const;
+        /* The pane captions, sashes and borders, which wxAUI draws for us and
+           which are not tied to the desktop's own light or dark setting */
+        void ApplyThemeToDockArt();
+        /* The check marks beside the checkable menu items; see the definition */
+        void ApplyThemeToMenus();
+        /* Keeps the setting and the menu's radio group in step */
+        void SetColorTheme(int theme);
         bool ApplyLinkColor(const wxColour& color);
         void CallPaneFunc(wxWindowID id, QSP_BOOL toShow) const;
         void TogglePane(wxWindowID id);
@@ -237,7 +288,7 @@
         void OnMenuOpen(wxMenuEvent& event);
         void OnSelectFont(wxCommandEvent& event);
         void OnUseFontSize(wxCommandEvent& event);
-        void OnUseSystemColors(wxCommandEvent& event);
+        void OnSelectTheme(wxCommandEvent& event);
         void OnSysColourChanged(wxSysColourChangedEvent& event);
         void OnSelectFontColor(wxCommandEvent& event);
         void OnSelectBackColor(wxCommandEvent& event);
@@ -272,7 +323,10 @@
         void OnMouseClick(wxMouseEvent& event);
         void OnWheel(wxMouseEvent& event);
         void OnPaneClose(wxAuiManagerEvent& event);
+        void OnSize(wxSizeEvent& event);
         void OnDropFiles(wxDropFilesEvent& event);
+        /* Give every dock the share of the window it had before the resize */
+        void RescaleDocks();
 
         // Fields
         bool m_isGameOpened;
@@ -297,10 +351,17 @@
         wxMenu *m_settingsMenu;
         wxAuiManager *m_manager;
         QSPToast *m_toast;
+        QSPLoadingOverlay *m_loadingOverlay;
+        bool m_isLoading;
         QSPSaveSlots m_saveSlots;
         wxMenu *m_saveSlotsMenu;
         wxMenu *m_loadSlotsMenu;
         bool m_isManagerUpdatePending;
+        QSPDockLayout m_dockLayout;
+        /* The client size the dock sizes belong to, and a guard against the
+           resize our own relayout could set off */
+        wxSize m_lastLayoutSize;
+        bool m_isRescalingDocks;
         wxColour m_backColor;
         wxColour m_linkColor;
         wxColour m_fontColor;
@@ -312,12 +373,35 @@
         bool m_keyPressedWhileDisabled;
         bool m_toShowHotkeys;
         bool m_toCheckUpdates;
-        /* Track the desktop's light/dark setting instead of the colours saved
-           in the config. Cleared the moment a colour is picked by hand: an
-           explicit choice is not something to quietly overwrite. */
-        bool m_toUseSystemColors;
+        /* How the frame is painted - QSPColorTheme. Following the desktop is
+           worked out on the spot, so a desktop that switches to dark while the
+           player is running is followed as it happens. */
+        int m_colorTheme;
         int m_volume;
         int m_menuIndex;
+    };
+
+    /* Keeps the overlay up for exactly as long as the load lasts. Opening a
+       game leaves by half a dozen different returns - an unreadable file, a
+       world the engine rejects, the player being closed part way through -
+       and every one of them has to take the overlay with it. */
+    class QSPLoadingScope
+    {
+    public:
+        QSPLoadingScope(QSPFrame *frame, const wxString &stage, const wxString &detail)
+            : m_frame(frame)
+        {
+            m_frame->BeginLoading(stage, detail);
+        }
+        ~QSPLoadingScope() { m_frame->EndLoading(); }
+
+        void SetStage(const wxString &stage) { m_frame->SetLoadingStage(stage); }
+
+    private:
+        QSPLoadingScope(const QSPLoadingScope&);
+        QSPLoadingScope& operator=(const QSPLoadingScope&);
+
+        QSPFrame *m_frame;
     };
 
 #endif

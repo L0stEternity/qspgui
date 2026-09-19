@@ -28,12 +28,9 @@ bool QSPApp::OnInit()
 
     SetupLogging();
 
-#ifdef __WXMSW__
-    /* Themes the parts the player does not paint itself - the menu bar, the
-       AUI captions, the scrollbars and the common dialogs - to match the
-       desktop. The panes' own colours are settings, handled by the frame. */
-    MSWEnableDarkMode(DarkMode_Auto);
-#endif
+    /* Before InitUI, and before anything else creates a window: the choice
+       cannot be made once one exists. */
+    ApplyStoredAppearance();
 
     wxInitAllImageHandlers();
     QSPInit();
@@ -177,11 +174,42 @@ bool QSPApp::OnCmdLineParsed(wxCmdLineParser &parser)
     return true;
 }
 
-void QSPApp::InitUI()
+wxString QSPApp::GetSettingsPath() const
 {
     wxString configPath = QSPTools::GetAppPath(wxEmptyString, QSP_CONFIG);
     if (!wxFileExists(configPath) && !wxFileName::IsDirWritable(QSPTools::GetAppPath()))
         configPath = QSPTools::GetConfigPath(wxEmptyString, QSP_CONFIG);
+    return configPath;
+}
+
+/* The menus, the dropdowns, the scrollbars and the window frame belong to
+   Windows, and wxWidgets can only pick light or dark for them while there is
+   no window yet - so the theme is read here, out of the settings file
+   directly, rather than waiting for the frame to load it. That is also why
+   changing the theme while the player runs leaves those parts as they are
+   until the next start, which the frame says as it happens. */
+void QSPApp::ApplyStoredAppearance()
+{
+    wxFileConfig cfg(wxEmptyString, wxEmptyString, GetSettingsPath());
+    /* The setting used to be an on/off flag for following the desktop */
+    bool toUseSystemColors;
+    cfg.Read(wxT("Colors/UseSystemColors"), &toUseSystemColors, true);
+    int theme;
+    cfg.Read(wxT("Colors/Theme"), &theme, (toUseSystemColors ? QSP_THEME_SYSTEM : QSP_THEME_LIGHT));
+
+    Appearance appearance;
+    switch (theme)
+    {
+    case QSP_THEME_LIGHT: appearance = Appearance::Light; break;
+    case QSP_THEME_DARK: appearance = Appearance::Dark; break;
+    default: appearance = Appearance::System; break;
+    }
+    SetAppearance(appearance);
+}
+
+void QSPApp::InitUI()
+{
+    wxString configPath = GetSettingsPath();
 
     wxString langsPath = QSPTools::GetResourcePath(QSP_TRANSLATIONS);
     m_transHelper = new QSPTranslationHelper(QSP_APPNAME, langsPath);
