@@ -362,14 +362,44 @@ msgstr "深色主题(&K)"
 msgid "Menus and dialogs follow when the player is restarted"
 msgstr "菜单和对话框将在重启播放器后随之更改"
 
-msgid "Save to slo&t"
-msgstr "保存到存档位(&T)"
+msgid "Save slo&ts...\tF6"
+msgstr "存档位(&T)...\tF6"
 
-msgid "Load from slo&t"
-msgstr "从存档位读取(&T)"
+msgid "Save slots"
+msgstr "存档位"
 
-msgid "&%d: empty"
-msgstr "&%d: 空"
+msgid "Slot"
+msgstr "存档位"
+
+msgid "Contents"
+msgstr "内容"
+
+msgid "Saved"
+msgstr "保存时间"
+
+msgid "empty"
+msgstr "空"
+
+msgid "&Save"
+msgstr "保存(&S)"
+
+msgid "&Load"
+msgstr "读取(&L)"
+
+msgid "&Delete"
+msgstr "删除(&D)"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Slot %d already holds a save. Overwrite it?"
+msgstr "存档位 %d 中已有存档。要覆盖吗？"
+
+msgid "Delete the save in slot %d? This can't be undone."
+msgstr "要删除存档位 %d 中的存档吗？此操作无法撤销。"
+
+msgid "Couldn't delete slot %d"
+msgstr "无法删除存档位 %d"
 
 msgid "saved"
 msgstr "已存档"
@@ -407,5 +437,3 @@ msgstr "正在载入存档"
 msgid "Restoring the saved game"
 msgstr "正在恢复存档"
 
-msgid "Large games take a while to unpack - %d s so far"
-msgstr "大型游戏解包需要一些时间 — 已用 %d 秒"

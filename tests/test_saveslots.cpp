@@ -112,7 +112,6 @@ QSP_TEST(an_unwritten_slot_reads_as_empty)
     QSPSaveSlots::Info info(slots.GetInfo(3));
     QSP_CHECK_BOOL(info.isUsed, false);
     QSP_CHECK_STR(info.location, wxT(""));
-    QSP_CHECK(slots.Describe(3).Contains(wxT("3")));
 }
 
 QSP_TEST(a_written_slot_reports_its_location_and_time)
@@ -128,7 +127,6 @@ QSP_TEST(a_written_slot_reports_its_location_and_time)
     QSP_CHECK_BOOL(info.isUsed, true);
     QSP_CHECK_STR(info.location, wxT("forest clearing"));
     QSP_CHECK_BOOL(info.time.IsValid(), true);
-    QSP_CHECK(slots.Describe(2).Contains(wxT("forest clearing")));
 }
 
 QSP_TEST(the_save_file_decides_whether_a_slot_is_used)
@@ -162,8 +160,6 @@ QSP_TEST(a_save_with_no_sidecar_entry_still_counts)
     QSPSaveSlots::Info info(slots.GetInfo(5));
     QSP_CHECK_BOOL(info.isUsed, true);
     QSP_CHECK_STR(info.location, wxT(""));
-    /* And the label still has to say something */
-    QSP_CHECK(!slots.Describe(5).IsEmpty());
 }
 
 QSP_TEST(slots_do_not_leak_into_each_other)
@@ -198,4 +194,56 @@ QSP_TEST(rewriting_a_slot_replaces_its_description)
     slots.Remember(6, wxT("after"));
 
     QSP_CHECK_STR(slots.GetInfo(6).location, wxT("after"));
+}
+
+QSP_TEST(deleting_a_slot_takes_the_save_and_its_description)
+{
+    TempGame game;
+    QSPSaveSlots slots;
+    slots.SetGameFile(game.GetGameFile());
+
+    game.WriteSave(slots.GetSlotPath(6));
+    slots.Remember(6, wxT("lighthouse"));
+    QSP_CHECK_BOOL(slots.GetInfo(6).isUsed, true);
+
+    QSP_CHECK_BOOL(slots.Delete(6), true);
+    QSP_CHECK_BOOL(wxFileExists(slots.GetSlotPath(6)), false);
+    /* And nothing of the old save is left to describe a later one written
+       into the same slot */
+    QSPSaveSlots::Info info(slots.GetInfo(6));
+    QSP_CHECK_BOOL(info.isUsed, false);
+    QSP_CHECK_STR(info.location, wxT(""));
+    game.WriteSave(slots.GetSlotPath(6));
+    QSP_CHECK_STR(slots.GetInfo(6).location, wxT(""));
+}
+
+QSP_TEST(deleting_an_empty_slot_reports_that_it_did_nothing)
+{
+    TempGame game;
+    QSPSaveSlots slots;
+    slots.SetGameFile(game.GetGameFile());
+
+    QSP_CHECK_BOOL(slots.Delete(7), false);
+    /* Out of range and no game at all are the same "no" */
+    QSP_CHECK_BOOL(slots.Delete(0), false);
+    QSP_CHECK_BOOL(slots.Delete(QSPSaveSlots::Count + 1), false);
+    QSPSaveSlots noGame;
+    QSP_CHECK_BOOL(noGame.Delete(1), false);
+}
+
+QSP_TEST(deleting_one_slot_leaves_the_others_alone)
+{
+    TempGame game;
+    QSPSaveSlots slots;
+    slots.SetGameFile(game.GetGameFile());
+
+    game.WriteSave(slots.GetSlotPath(1));
+    slots.Remember(1, wxT("attic"));
+    game.WriteSave(slots.GetSlotPath(2));
+    slots.Remember(2, wxT("garden"));
+
+    QSP_CHECK_BOOL(slots.Delete(1), true);
+    QSP_CHECK_BOOL(slots.GetInfo(1).isUsed, false);
+    QSP_CHECK_BOOL(slots.GetInfo(2).isUsed, true);
+    QSP_CHECK_STR(slots.GetInfo(2).location, wxT("garden"));
 }

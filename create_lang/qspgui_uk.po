@@ -362,14 +362,44 @@ msgstr "Те&мна тема"
 msgid "Menus and dialogs follow when the player is restarted"
 msgstr "Меню та діалоги зміняться після перезапуску плеєра"
 
-msgid "Save to slo&t"
-msgstr "Зберегти у сло&т"
+msgid "Save slo&ts...\tF6"
+msgstr "Сло&ти збереження...\tF6"
 
-msgid "Load from slo&t"
-msgstr "Завантажити зі сло&ту"
+msgid "Save slots"
+msgstr "Слоти збереження"
 
-msgid "&%d: empty"
-msgstr "&%d: порожньо"
+msgid "Slot"
+msgstr "Слот"
+
+msgid "Contents"
+msgstr "Вміст"
+
+msgid "Saved"
+msgstr "Збережено"
+
+msgid "empty"
+msgstr "порожньо"
+
+msgid "&Save"
+msgstr "&Зберегти"
+
+msgid "&Load"
+msgstr "&Завантажити"
+
+msgid "&Delete"
+msgstr "&Видалити"
+
+msgid "Close"
+msgstr "Закрити"
+
+msgid "Slot %d already holds a save. Overwrite it?"
+msgstr "У слоті %d вже є збереження. Перезаписати?"
+
+msgid "Delete the save in slot %d? This can't be undone."
+msgstr "Видалити збереження зі слота %d? Це не можна скасувати."
+
+msgid "Couldn't delete slot %d"
+msgstr "Не вдалося видалити слот %d"
 
 msgid "saved"
 msgstr "збережено"
@@ -407,5 +437,3 @@ msgstr "Завантаження збереження"
 msgid "Restoring the saved game"
 msgstr "Відновлення збереження"
 
-msgid "Large games take a while to unpack - %d s so far"
-msgstr "Великі ігри розпаковуються не одразу — минуло %d с"

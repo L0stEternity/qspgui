@@ -1,0 +1,98 @@
+# The player's own icon, drawn as pixels rather than resampled from one master.
+#
+# The mark is a sixteen-cell Q -- the letter the old icon used, kept so the
+# thing stays recognisable, but redrawn with an even stroke and a tail that
+# crosses the bowl, so it reads as a Q at 16 pixels instead of as a speech
+# bubble.
+#
+# Every shipped size is rendered at its own scale from this grid, so a 16px
+# icon is sixteen real pixels and not a blurred 1024. tools/make_icons.py
+# drives the renders and packs them into logo.ico, the XPMs, icon.icns and
+# qsp.svg.
+
+@set qspgui
+    size    16
+    scale   1
+    out     .
+
+@palette
+    a  #FF4A4A   the stroke, before the ramp runs over it
+
+
+# The letter itself. The bowl is 14 wide because
+# the outline pass needs the outer ring, and the tail is a 2-cell diagonal
+# that starts inside the counter and leaves through the bottom-right.
+@shape qmark
+    @grid
+    ................
+    ....aaaaaaaa....
+    ..aaaaaaaaaaaa..
+    .aaaa......aaaa.
+    .aaa........aaa.
+    .aaa........aaa.
+    .aaa........aaa.
+    .aaa........aaa.
+    .aaa........aaa.
+    .aaa.....aaaaaa.
+    .aaaa.....aaaaa.
+    ..aaaaaaaaaaaaa.
+    ....aaaaaaaaaaa.
+    ...........aaaa.
+    ............aa..
+    ................
+
+
+# The letter carries the colour; the tile behind it is slate.
+@icon mark bleed
+    @pipeline
+        gradient from=#FF8A5C to=#D81B45 axis=diag mode=mix amount=0.85
+        outline  color=#2A0A12 width=1 connect=8
+    @use qmark
+
+
+# The shipped pictures. One scene per size rather than one master that gets
+# resampled: at 16 and 32 the chrome has to shrink by hand or it turns to mud.
+
+# At sixteen pixels a tile is four pixels of rounded corner and no room for
+# the letter, so the smallest size drops the chrome and is the mark alone.
+@scene mark16
+    size 16x16
+    @place  mark at=8,8 anchor=c scale=1
+
+# Windows asks for 20 and 24 at 125% and 150% display scaling. Without these
+# it takes the 32 down to 20, which on pixel art is a blur; drawn here they
+# are the mark with what margin the size allows.
+@scene tile20
+    size 20x20
+    @rect   at=0,0 size=20x20 fill=#1A1F2B color=#0B0E13 width=1 radius=4
+    @place  mark at=10,10 anchor=c scale=1
+
+@scene tile24
+    size 24x24
+    @rect   at=0,0 size=24x24 fill=#1A1F2B color=#0B0E13 width=1 radius=5
+    @rect   at=2,2 size=20x20 color=#2F394A width=1 radius=3
+    @place  mark at=12,12 anchor=c scale=1
+
+# The mark sits at half the tile here and at three quarters of the 64, which
+# is the same proportion once the 64 has its wider chrome.
+@scene tile32
+    size 32x32
+    @rect   at=0,0 size=32x32 fill=#1A1F2B color=#0B0E13 width=1 radius=6
+    @rect   at=2,2 size=28x28 color=#2F394A width=1 radius=4
+    @place  mark at=16,16 anchor=c scale=1
+
+# 48 cannot hold three quarters of 16 at a whole scale, so the mark runs one
+# step smaller here rather than being a blurred downscale of the 64.
+@scene tile48
+    size 48x48
+    @rect   at=0,0 size=48x48 fill=#1A1F2B color=#0B0E13 width=1 radius=9
+    @rect   at=3,3 size=42x42 color=#2F394A width=1 radius=6
+    @place  mark at=24,24 anchor=c scale=2
+
+# The one every large size is cut from, by re-running it at a bigger scale:
+# 64 at x1, 128 at x2, 256 at x4, 512 at x8, 1024 at x16.
+@scene tile64
+    size 64x64
+    @rect   at=0,0 size=64x64 fill=#1A1F2B color=#0B0E13 width=1 radius=12
+    @rect   at=4,4 size=56x56 color=#2F394A width=1 radius=8
+    @place  mark at=32,32 anchor=c scale=3

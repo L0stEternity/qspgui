@@ -27,8 +27,13 @@
        A large game is tens of megabytes of ciphered text and a save of it can
        be another fifteen, and all of it is decoded on one core. Until this
        existed the window simply stopped answering for those seconds, which is
-       indistinguishable from a hang - so the wait is now named, counted and
-       animated.
+       indistinguishable from a hang - so the wait is now shown.
+
+       It is deliberately nothing more than a spinner on the player's own
+       background. Everything the wait has to say, it says with the ring: it
+       turns while the step cannot be measured, and fills round once while it
+       can. A panel, a caption and a progress bar were all tried here and all
+       of them looked like a dialog the reader was expected to read.
 
        It is a floating frame covering the parent's client area rather than a
        child window, for the same reason the toast is: the description panes
@@ -37,7 +42,15 @@
 
        The animation is driven from two places. Its own timer runs it whenever
        the event loop is the frame's, and Tick() runs it from a caller that is
-       pumping the loop by hand around a background load. */
+       pumping the loop by hand around a background load.
+
+       Begin() arms the overlay rather than showing it, and it only appears
+       once the wait has gone on long enough to be worth admitting to. Most
+       loads - a quick save above all - are over before that, and a spinner
+       that appears and vanishes inside a blink reads as a glitch. Worse, a
+       step that cannot be ticked at all, as restoring a save cannot, would
+       put up a ring and freeze it, which reads as a hang. Waiting out the
+       delay means such a step is simply never drawn. */
     class QSPLoadingOverlay : public wxFrame
     {
         DECLARE_CLASS(QSPLoadingOverlay)
@@ -47,14 +60,16 @@
         QSPLoadingOverlay(wxWindow *parent);
 
         // Methods
-        /* Puts the overlay up. detail is the thing being loaded - a file name,
-           or a slot - and is shown under the stage. */
+        /* Arms the overlay: it goes up by itself once the wait passes the
+           delay, and not at all if the work finishes first. stage and detail
+           name the work for anything that asks the player what it is doing -
+           the dev API, mainly - and are not drawn. */
         void Begin(const wxString &stage, const wxString &detail);
-        /* The phase the load has reached. Resets the bar to indeterminate,
+        /* The phase the load has reached. Resets the ring to indeterminate,
            because a new phase knows nothing about the last one's sizes. */
         void SetStage(const wxString &stage);
         /* Bytes done out of bytes expected. A total of 0 or less means the
-           step cannot be measured, and the bar sweeps instead of filling. */
+           step cannot be measured, and the ring turns instead of filling. */
         void SetProgress(wxFileOffset done, wxFileOffset total);
         void End();
         /* The player's own palette, as the toast takes it: this is the player
@@ -70,12 +85,15 @@
     protected:
         // Internal methods
         void Reposition();
-        /* The card in the middle, in client coordinates */
-        wxRect GetCardRect() const;
-        void DrawPanel(wxDC &dc, const wxRect &rect) const;
+        /* Puts the overlay on screen if the wait has gone on long enough.
+           Does nothing once it is already up. */
+        void ShowIfDue();
+        /* The spinner's square, in client coordinates */
+        wxRect GetSpinnerRect() const;
+        /* Given a wxGCDC where the platform has one, so the ring comes out
+           antialiased, and the plain paint DC where it does not. */
         void DrawSpinner(wxDC &dc, const wxRect &rect) const;
-        void DrawBar(wxDC &dc, const wxRect &rect) const;
-        /* Somewhere between the panel and the text, for the parts of the
+        /* Somewhere between the background and the text, for the parts of the
            drawing that have to read as quieter than either */
         wxColour Mix(const wxColour &from, const wxColour &to, int percent) const;
         wxColour GetAccentColor() const;
@@ -91,18 +109,27 @@
         void OnKey(wxKeyEvent& event);
 
         // Fields
+        /* Kept rather than drawn. The ring says everything the reader is
+           shown; these are the record of which step is running, which is what
+           a caller passes in and what anything asking the player what it is
+           busy with would want. */
         wxString m_stage;
         wxString m_detail;
         wxFileOffset m_done;
         wxFileOffset m_total;
-        int m_phase; /* the spinner's position, in twelfths of a turn */
-        int m_sweep; /* the indeterminate bar's position, 0..1000 */
-        /* When the animation last moved. Tick() is called as fast as the
-           waiting loop goes round, which is not the speed the spinner should
-           turn at. */
-        long m_lastTick;
         bool m_isRunning;
+        /* The ring's angle comes off this rather than off a tick count, so it
+           turns at the same speed whether the timer or a hand-pumped loop is
+           driving it. */
         wxStopWatch m_elapsed;
+        /* When the animation last moved. Tick() is called as fast as the
+           waiting loop goes round, which is faster than anything needs to be
+           repainted at. */
+        long m_lastTick;
+        /* When the overlay went up, or -1 while it is still armed. The ring's
+           angle is measured from here, so it always starts at the top rather
+           than wherever the delay happened to leave it. */
+        long m_shownAt;
         wxTimer m_timer;
         wxColour m_backColor;
         wxColour m_textColor;

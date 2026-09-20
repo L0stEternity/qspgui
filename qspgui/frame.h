@@ -78,14 +78,9 @@
         ID_QUICKSAVE,
         ID_QUICKSAVESLOT,
         ID_QUICKLOADSLOT,
-        /* Two contiguous runs of QSPSaveSlots::Count, so a menu id maps back
-           to a slot number by subtraction */
-        ID_SAVETOSLOT,
-        ID_LOADFROMSLOT,
-        ID_SAVESLOT1,
-        ID_SAVESLOT9 = ID_SAVESLOT1 + QSPSaveSlots::Count - 1,
-        ID_LOADSLOT1,
-        ID_LOADSLOT9 = ID_LOADSLOT1 + QSPSaveSlots::Count - 1,
+        /* Every numbered slot, and saving, loading and deleting, live in one
+           dialog rather than in two submenus of nine labels each */
+        ID_SAVESLOTS,
         ID_VOLUME,
         ID_VOLUME0,
         ID_VOLUME20,
@@ -265,7 +260,9 @@
            dialog: saving is not an event worth interrupting play for. */
         void SaveToNumberedSlot(int slot);
         void LoadFromNumberedSlot(int slot);
-        void RefreshSlotLabels();
+        /* The slots dialog, and whichever of the two the player asked for
+           there. Deleting is done inside the dialog: it is only files. */
+        void ShowSaveSlots();
         /* $CURLOC, for the slot listing. Empty when it can't be read. */
         wxString GetCurrentLocationName() const;
 
@@ -283,9 +280,7 @@
         void OnQuickSave(wxCommandEvent& event);
         void OnQuickSaveSlot(wxCommandEvent& event);
         void OnQuickLoadSlot(wxCommandEvent& event);
-        void OnSaveToSlot(wxCommandEvent& event);
-        void OnLoadFromSlot(wxCommandEvent& event);
-        void OnMenuOpen(wxMenuEvent& event);
+        void OnSaveSlots(wxCommandEvent& event);
         void OnSelectFont(wxCommandEvent& event);
         void OnUseFontSize(wxCommandEvent& event);
         void OnSelectTheme(wxCommandEvent& event);
@@ -354,8 +349,6 @@
         QSPLoadingOverlay *m_loadingOverlay;
         bool m_isLoading;
         QSPSaveSlots m_saveSlots;
-        wxMenu *m_saveSlotsMenu;
-        wxMenu *m_loadSlotsMenu;
         bool m_isManagerUpdatePending;
         QSPDockLayout m_dockLayout;
         /* The client size the dock sizes belong to, and a guard against the

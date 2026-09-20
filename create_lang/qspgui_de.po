@@ -362,14 +362,44 @@ msgstr "Dun&kles Design"
 msgid "Menus and dialogs follow when the player is restarted"
 msgstr "Menüs und Dialoge folgen nach einem Neustart des Players"
 
-msgid "Save to slo&t"
-msgstr "In Pla&tz speichern"
+msgid "Save slo&ts...\tF6"
+msgstr "Speicherplä&tze...\tF6"
 
-msgid "Load from slo&t"
-msgstr "Aus Pla&tz laden"
+msgid "Save slots"
+msgstr "Speicherplätze"
 
-msgid "&%d: empty"
-msgstr "&%d: leer"
+msgid "Slot"
+msgstr "Platz"
+
+msgid "Contents"
+msgstr "Inhalt"
+
+msgid "Saved"
+msgstr "Gespeichert"
+
+msgid "empty"
+msgstr "leer"
+
+msgid "&Save"
+msgstr "&Speichern"
+
+msgid "&Load"
+msgstr "&Laden"
+
+msgid "&Delete"
+msgstr "&Löschen"
+
+msgid "Close"
+msgstr "Schließen"
+
+msgid "Slot %d already holds a save. Overwrite it?"
+msgstr "Platz %d enthält bereits einen Spielstand. Überschreiben?"
+
+msgid "Delete the save in slot %d? This can't be undone."
+msgstr "Spielstand in Platz %d löschen? Das kann nicht widerrufen werden."
+
+msgid "Couldn't delete slot %d"
+msgstr "Platz %d konnte nicht gelöscht werden"
 
 msgid "saved"
 msgstr "gespeichert"
@@ -407,5 +437,3 @@ msgstr "Spielstand wird geladen"
 msgid "Restoring the saved game"
 msgstr "Spielstand wird wiederhergestellt"
 
-msgid "Large games take a while to unpack - %d s so far"
-msgstr "Große Spiele brauchen zum Entpacken etwas Zeit – bisher %d s"

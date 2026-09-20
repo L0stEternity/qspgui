@@ -146,6 +146,7 @@ set(QSPGUI_SOURCES
 	qspgui/msgdlg.cpp
 	qspgui/textbox.cpp
 	qspgui/saveslots.cpp
+	qspgui/saveslotsdlg.cpp
 	qspgui/toast.cpp
 	qspgui/transhelper.cpp
 	qspgui/updateappdialog.cpp

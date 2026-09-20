@@ -188,10 +188,16 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   a subclass supplies its own document and is told when it is live. `QSPWebTextBox`
   was rebased onto it, so that machinery has one copy rather than four.
 
-- **Numbered save slots** (`qspgui/saveslots.{h,cpp}` — new `QSPSaveSlots`), as
-  two submenus in the Game menu. Nine slots per game, beside the game file the
-  way the quick slot already is, so uninstalling a game takes its saves with it.
-  - The menu shows what is in each slot — location and timestamp — because a
+- **Numbered save slots** (`qspgui/saveslots.{h,cpp}` — new `QSPSaveSlots`),
+  reached through **Game → Save slots... (F6)**. Nine slots per game, beside the
+  game file the way the quick slot already is, so uninstalling a game takes its
+  saves with it.
+  - One dialog (`qspgui/saveslotsdlg.{h,cpp}` — new `QSPSaveSlotsDlg`) holds the
+    lot: every slot in a list, with **Save**, **Load** and **Delete** acting on
+    the selected row. 1 to 9 pick a slot from the keyboard, and double-click or
+    Enter loads a used slot or saves into an empty one. Overwriting and deleting
+    ask first; nothing else does.
+  - The list shows what is in each slot — location and timestamp — because a
     `.sav` says nothing about itself: the engine's format has no header a player
     can read without loading it, and loading it is the one thing a "which save
     is this?" question must not do. A sidecar written next to the game carries
@@ -199,8 +205,14 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   - The sidecar is advisory throughout. The save file is the truth: a slot whose
     `.sav` was deleted from the file manager is empty however the sidecar
     describes it, and a `.sav` dropped in by hand still loads, just with nothing
-    to show for itself in the menu. Labels are rebuilt when the menu opens, so a
-    slot written by a second copy of the player reads correctly.
+    to show for itself in the list. The list is read off the files every time it
+    is shown, so a slot written by a second copy of the player reads correctly.
+  - Deleting a slot removes the `.sav` first and its sidecar line second: a
+    description without a save is harmless, a save nobody can describe is not.
+  - Under the web renderer F6 arrives as a synthetic event from whichever pane
+    has the focus, the way F5 and F9 already did — and now from all four of
+    them rather than only the two description panes. Which pane the reader last
+    clicked in is not something a save key should turn on.
 
 - **Breakpoints and stepping in the development API.** `break`, `pause` and
   `resume`, with `paused` / `resumed` notifications. The engine has no debugger;
@@ -325,6 +337,27 @@ media formats and CSS. The classic renderer remains the default and is unchanged
 - `CHANGELOG.md`.
 
 ### Changed
+
+- **A new application icon, drawn as pixel art.** The old mark was a red Q on
+  an opaque white square, which put a white box on every dark taskbar and
+  titlebar; it is now a Q on a dark rounded tile, with a tail that crosses the
+  bowl so it still reads as a Q at sixteen pixels.
+
+  The source is `misc/common/icons/qspgui.glyph`, a character grid plus one
+  scene per shipped size. `asciipng` renders it and
+  `tools/make_icons.py` packs the result into
+  `logo.ico` (16, 20, 24, 32, 48, 64, 128, 256 -- 20 and 24 are what Windows
+  asks for at 125% and 150% scaling), `qspgui/icons/logo{,_big}.xpm`,
+  `misc/macos/icon.icns` and `misc/common/icons/qsp.svg`. Every size is drawn
+  at its own scale rather than resampled off one master, which is the point of
+  pixel art; re-render with:
+
+  ```sh
+  python tools/make_icons.py --asciipng /path/to/asciipng
+  ```
+
+  `logo.xpm`, the window icon on GTK and macOS, went from 16x16 to 32x32 along
+  the way. The toolbar and menu icons are untouched.
 
 - **The build tree is runnable.** `langs/` and `sound/` are staged next to the
   freshly built exe (into `Contents/Resources` for the macOS bundle), so a

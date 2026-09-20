@@ -362,14 +362,44 @@ msgstr "Mal&hela etoso"
 msgid "Menus and dialogs follow when the player is restarted"
 msgstr "Menuoj kaj dialogoj sekvos post rekomenco de la ludilo"
 
-msgid "Save to slo&t"
-msgstr "Konservi en fa&kon"
+msgid "Save slo&ts...\tF6"
+msgstr "Konservaj fa&koj...\tF6"
 
-msgid "Load from slo&t"
-msgstr "Ŝargi el fa&ko"
+msgid "Save slots"
+msgstr "Konservaj fakoj"
 
-msgid "&%d: empty"
-msgstr "&%d: malplena"
+msgid "Slot"
+msgstr "Fako"
+
+msgid "Contents"
+msgstr "Enhavo"
+
+msgid "Saved"
+msgstr "Konservita"
+
+msgid "empty"
+msgstr "malplena"
+
+msgid "&Save"
+msgstr "&Konservi"
+
+msgid "&Load"
+msgstr "Ŝ&argi"
+
+msgid "&Delete"
+msgstr "&Forigi"
+
+msgid "Close"
+msgstr "Fermi"
+
+msgid "Slot %d already holds a save. Overwrite it?"
+msgstr "Fako %d jam enhavas konservon. Ĉu superskribi?"
+
+msgid "Delete the save in slot %d? This can't be undone."
+msgstr "Ĉu forigi la konservon en fako %d? Tio ne estas malfarebla."
+
+msgid "Couldn't delete slot %d"
+msgstr "Ne eblis forigi fakon %d"
 
 msgid "saved"
 msgstr "konservita"
@@ -407,5 +437,3 @@ msgstr "Ŝargado de la konservaĵo"
 msgid "Restoring the saved game"
 msgstr "Restarigo de la konservaĵo"
 
-msgid "Large games take a while to unpack - %d s so far"
-msgstr "Grandaj ludoj bezonas tempon por malpakiĝi – %d s ĝis nun"

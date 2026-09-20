@@ -362,14 +362,44 @@ msgstr "Dar&k theme"
 msgid "Menus and dialogs follow when the player is restarted"
 msgstr "Menus and dialogs follow when the player is restarted"
 
-msgid "Save to slo&t"
-msgstr "Save to slo&t"
+msgid "Save slo&ts...\tF6"
+msgstr "Save slo&ts...\tF6"
 
-msgid "Load from slo&t"
-msgstr "Load from slo&t"
+msgid "Save slots"
+msgstr "Save slots"
 
-msgid "&%d: empty"
-msgstr "&%d: empty"
+msgid "Slot"
+msgstr "Slot"
+
+msgid "Contents"
+msgstr "Contents"
+
+msgid "Saved"
+msgstr "Saved"
+
+msgid "empty"
+msgstr "empty"
+
+msgid "&Save"
+msgstr "&Save"
+
+msgid "&Load"
+msgstr "&Load"
+
+msgid "&Delete"
+msgstr "&Delete"
+
+msgid "Close"
+msgstr "Close"
+
+msgid "Slot %d already holds a save. Overwrite it?"
+msgstr "Slot %d already holds a save. Overwrite it?"
+
+msgid "Delete the save in slot %d? This can't be undone."
+msgstr "Delete the save in slot %d? This can't be undone."
+
+msgid "Couldn't delete slot %d"
+msgstr "Couldn't delete slot %d"
 
 msgid "saved"
 msgstr "saved"
@@ -407,5 +437,3 @@ msgstr "Loading the saved game"
 msgid "Restoring the saved game"
 msgstr "Restoring the saved game"
 
-msgid "Large games take a while to unpack - %d s so far"
-msgstr "Large games take a while to unpack - %d s so far"

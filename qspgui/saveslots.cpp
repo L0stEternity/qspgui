@@ -100,23 +100,16 @@ void QSPSaveSlots::Forget(int slot)
     cfg.Flush();
 }
 
-/* Built fresh every time the menu opens, so a slot written by another copy of
-   the player - or deleted from the file manager - reads correctly. */
-wxString QSPSaveSlots::Describe(int slot) const
+bool QSPSaveSlots::Delete(int slot)
 {
-    Info info(GetInfo(slot));
-    if (!info.isUsed)
-        return wxString::Format(_("&%d: empty"), slot);
+    wxString slotPath(GetSlotPath(slot));
+    if (slotPath.IsEmpty() || !wxFileExists(slotPath)) return false;
 
-    wxString detail;
-    if (!info.location.IsEmpty()) detail = info.location;
-    if (info.time.IsValid())
-    {
-        /* ISO-ish and unambiguous; the slot list is scanned, not read */
-        wxString when(info.time.Format(wxT("%Y-%m-%d %H:%M")));
-        detail = (detail.IsEmpty() ? when : detail + wxT(" - ") + when);
-    }
-    if (detail.IsEmpty()) detail = _("saved");
+    /* The file goes first. A sidecar line without a save is harmless - the
+       slot simply reads as empty - while a save without its line is a slot
+       nobody can tell anything about. */
+    if (!wxRemoveFile(slotPath)) return false;
 
-    return wxString::Format(wxT("&%d: %s"), slot, detail);
+    Forget(slot);
+    return true;
 }

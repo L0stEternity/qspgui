@@ -18,15 +18,25 @@
 #include "loadingoverlay.h"
 
 #include <wx/dcbuffer.h>
+#if wxUSE_GRAPHICS_CONTEXT
+    #include <wx/dcgraph.h>
+#endif
 
-/* One twelfth of a turn per tick gives a spinner that reads as moving without
-   looking hurried. The sweep of the indeterminate bar is tied to the same
-   tick so the two never drift apart. */
-#define QSP_LOADING_TICK 60
-#define QSP_LOADING_SWEEPSTEP 22
-/* Nothing is said about how long this takes until the wait is long enough to
-   be worth explaining. A quick load should not flash a paragraph at anyone. */
-#define QSP_LOADING_HINTAFTER 2500
+#include <math.h>
+
+/* 40 fps. The ring turns, so it is worth the frames - and a repaint is one
+   arc on a background, which is cheap enough to do this often even inside
+   the hand-pumped loop that waits on a load. */
+#define QSP_LOADING_TICK 25
+/* One turn a second: fast enough to read as working, slow enough not to
+   look frantic. */
+#define QSP_LOADING_TURNMS 1000.0
+/* How much of the circle the head covers while there is nothing to measure */
+#define QSP_LOADING_ARCDEG 105.0
+/* How long a wait has to last before it is worth showing at all. Under this
+   the player simply looks busy for a moment, which is the truth and is what
+   a reader expects of a quick save. */
+#define QSP_LOADING_SHOWAFTER 250
 
 wxIMPLEMENT_CLASS(QSPLoadingOverlay, wxFrame);
 
@@ -47,17 +57,6 @@ bool IsDarkColor(const wxColour &color)
     return (color.Red() * 30 + color.Green() * 59 + color.Blue() * 11) / 100 < 128;
 }
 
-/* Sizes as the reader thinks of them. A 40 MB game is the case this whole
-   overlay exists for, so the number is worth showing. */
-wxString FormatSize(wxFileOffset bytes)
-{
-    if (bytes >= 1024 * 1024)
-        return wxString::Format(wxT("%.1f MB"), (double)bytes / (1024.0 * 1024.0));
-    if (bytes >= 1024)
-        return wxString::Format(wxT("%.0f KB"), (double)bytes / 1024.0);
-    return wxString::Format(wxT("%d B"), (int)bytes);
-}
-
 }
 
 QSPLoadingOverlay::QSPLoadingOverlay(wxWindow *parent) :
@@ -65,10 +64,9 @@ QSPLoadingOverlay::QSPLoadingOverlay(wxWindow *parent) :
             wxFRAME_TOOL_WINDOW | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT | wxBORDER_NONE),
     m_done(0),
     m_total(0),
-    m_phase(0),
-    m_sweep(0),
-    m_lastTick(0),
     m_isRunning(false),
+    m_lastTick(0),
+    m_shownAt(-1),
     m_timer(this),
     m_backColor(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW)),
     m_textColor(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT))
@@ -83,26 +81,30 @@ void QSPLoadingOverlay::Begin(const wxString &stage, const wxString &detail)
     m_stage = stage;
     m_detail = detail;
     m_done = m_total = 0;
-    m_phase = 0;
-    m_sweep = 0;
     m_lastTick = 0;
+    m_shownAt = -1;
     m_elapsed.Start();
     m_isRunning = true;
 
+    /* Armed, not shown. ShowIfDue decides, from the timer or from Tick. */
+    m_timer.Start(QSP_LOADING_TICK);
+}
+
+void QSPLoadingOverlay::ShowIfDue()
+{
+    if (m_shownAt >= 0 || m_elapsed.Time() < QSP_LOADING_SHOWAFTER) return;
+
+    m_shownAt = m_elapsed.Time();
     Reposition();
-    if (!IsShown())
-    {
-    #ifdef __WXMSW__
-        /* The frame keeps the keyboard: the overlay has nothing to type into,
-           and taking focus away would only have to be given back. */
-        ShowWithoutActivating();
-    #else
-        Show();
-    #endif
-    }
+#ifdef __WXMSW__
+    /* The frame keeps the keyboard: the overlay has nothing to type into,
+       and taking focus away would only have to be given back. */
+    ShowWithoutActivating();
+#else
+    Show();
+#endif
     Refresh();
     Update();
-    m_timer.Start(QSP_LOADING_TICK);
 }
 
 void QSPLoadingOverlay::SetStage(const wxString &stage)
@@ -111,8 +113,6 @@ void QSPLoadingOverlay::SetStage(const wxString &stage)
 
     m_stage = stage;
     m_done = m_total = 0;
-    Refresh();
-    Update();
 }
 
 void QSPLoadingOverlay::SetProgress(wxFileOffset done, wxFileOffset total)
@@ -127,6 +127,7 @@ void QSPLoadingOverlay::End()
 {
     m_timer.Stop();
     m_isRunning = false;
+    m_shownAt = -1;
     Hide();
 }
 
@@ -147,8 +148,9 @@ void QSPLoadingOverlay::Tick()
     if (now - m_lastTick < QSP_LOADING_TICK) return;
     m_lastTick = now;
 
-    ++m_phase;
-    m_sweep = (m_sweep + QSP_LOADING_SWEEPSTEP) % 1000;
+    ShowIfDue();
+    if (m_shownAt < 0) return;
+
     Reposition();
     Refresh();
     /* Straight to the screen: the caller is in the middle of a load and is
@@ -190,185 +192,82 @@ wxColour QSPLoadingOverlay::GetAccentColor() const
     return (IsDark() ? wxColour(142, 176, 255) : wxColour(0, 0, 160));
 }
 
-wxRect QSPLoadingOverlay::GetCardRect() const
+/* Centred, and a little above the middle: dead centre sits low to the eye. */
+wxRect QSPLoadingOverlay::GetSpinnerRect() const
 {
     wxSize size(GetClientSize());
-    int width = wxMin(FromDIP(420), size.GetWidth() - FromDIP(40));
-    int height = FromDIP(150);
-    if (width < FromDIP(160)) width = size.GetWidth();
-    /* A little above centre, where a caption is looked for */
-    int top = (size.GetHeight() - height) * 45 / 100;
-    if (top < 0) top = 0;
-    return wxRect((size.GetWidth() - width) / 2, top, width, height);
+    int side = FromDIP(54);
+    int smallest = wxMin(size.GetWidth(), size.GetHeight());
+    if (side > smallest / 3) side = smallest / 3;
+    if (side < 8) side = smallest;
+    return wxRect((size.GetWidth() - side) / 2, (size.GetHeight() - side) * 46 / 100, side, side);
 }
 
-/* The chiselled edge the rest of the player is drawn with: a hard outline, a
-   lit top and left inside it, a shaded bottom and right, all off the panel's
-   own colour so it is there on any theme. */
-void QSPLoadingOverlay::DrawPanel(wxDC &dc, const wxRect &rect) const
-{
-    bool isDark = IsDark();
-    wxColour face(m_backColor.ChangeLightness(isDark ? 118 : 100));
-
-    dc.SetPen(*wxTRANSPARENT_PEN);
-    dc.SetBrush(wxBrush(face));
-    dc.DrawRectangle(rect);
-
-    dc.SetBrush(*wxTRANSPARENT_BRUSH);
-    dc.SetPen(wxPen(m_backColor.ChangeLightness(isDark ? 165 : 35)));
-    dc.DrawRectangle(rect);
-
-    dc.SetPen(wxPen(face.ChangeLightness(isDark ? 135 : 150)));
-    dc.DrawLine(rect.x + 1, rect.y + 1, rect.GetRight(), rect.y + 1);
-    dc.DrawLine(rect.x + 1, rect.y + 1, rect.x + 1, rect.GetBottom());
-    dc.SetPen(wxPen(face.ChangeLightness(isDark ? 60 : 70)));
-    dc.DrawLine(rect.x + 1, rect.GetBottom() - 1, rect.GetRight(), rect.GetBottom() - 1);
-    dc.DrawLine(rect.GetRight() - 1, rect.y + 1, rect.GetRight() - 1, rect.GetBottom());
-}
-
-/* Twelve spokes around a circle, the one at the head in the accent colour and
-   the rest fading back into the panel. Spokes rather than an arc because a
-   plain wxDC has no antialiasing to smooth a curve with, and a thick line
-   reads cleanly at any size. */
 void QSPLoadingOverlay::DrawSpinner(wxDC &dc, const wxRect &rect) const
 {
-    const int spokes = 12;
-    int radius = wxMin(rect.GetWidth(), rect.GetHeight()) / 2;
-    if (radius < 4) return;
-
-    int cx = rect.x + rect.GetWidth() / 2, cy = rect.y + rect.GetHeight() / 2;
-    int inner = radius * 45 / 100;
-    int thickness = wxMax(2, radius / 5);
-    wxColour face(m_backColor.ChangeLightness(IsDark() ? 118 : 100));
-    wxColour accent(GetAccentColor());
-
-    for (int i = 0; i < spokes; ++i)
-    {
-        /* How far behind the head this spoke is, so the trail dies away
-           around the circle rather than all at once */
-        int age = (i - m_phase % spokes + spokes) % spokes;
-        wxColour color(Mix(accent, face, age * 88 / (spokes - 1)));
-        double angle = 2.0 * M_PI * i / spokes - M_PI / 2;
-        double dx = cos(angle), dy = sin(angle);
-        dc.SetPen(wxPen(color, thickness));
-        dc.DrawLine(
-            cx + (int)(dx * inner), cy + (int)(dy * inner),
-            cx + (int)(dx * radius), cy + (int)(dy * radius));
-    }
-}
-
-/* Filled to the fraction read while that is known, and a block sweeping from
-   side to side while it is not. The sweep is not a guess at progress - it
-   says the player is still working, which during a single uninterruptible
-   call into the engine is the only honest thing it can say. */
-void QSPLoadingOverlay::DrawBar(wxDC &dc, const wxRect &rect) const
-{
-    bool isDark = IsDark();
-    wxColour face(m_backColor.ChangeLightness(isDark ? 118 : 100));
-    wxColour trough(face.ChangeLightness(isDark ? 78 : 88));
-    wxColour accent(GetAccentColor());
-
-    dc.SetPen(*wxTRANSPARENT_PEN);
-    dc.SetBrush(wxBrush(trough));
-    dc.DrawRectangle(rect);
-
+    /* Clockwise from twelve o'clock, in degrees, the way the eye reads it. */
+    double head, sweep;
     if (m_total > 0)
     {
         wxFileOffset done = wxMin(m_done, m_total);
-        int width = (int)((wxFileOffset)rect.GetWidth() * done / m_total);
-        if (width > 0)
-        {
-            dc.SetBrush(wxBrush(accent));
-            dc.DrawRectangle(rect.x, rect.y, width, rect.GetHeight());
-        }
+        head = 0.0;
+        sweep = 360.0 * (double)done / (double)m_total;
+        /* Enough of an arc to read as an arc the moment a step begins,
+           rather than a speck until the first block comes back */
+        if (sweep < 14.0) sweep = 14.0;
     }
     else
     {
-        int blockWidth = wxMax(FromDIP(40), rect.GetWidth() / 4);
-        /* Out one side and back in the other, so the block is never clipped
-           in a way that looks like it stopped at the edge */
-        int span = rect.GetWidth() + blockWidth;
-        int x = rect.x - blockWidth + span * m_sweep / 1000;
-        wxRect block(x, rect.y, blockWidth, rect.GetHeight());
-        block.Intersect(rect);
-        if (!block.IsEmpty())
-        {
-            dc.SetBrush(wxBrush(accent));
-            dc.DrawRectangle(block);
-        }
+        double since = (double)(m_elapsed.Time() - wxMax(m_shownAt, 0));
+        head = fmod(since * 360.0 / QSP_LOADING_TURNMS, 360.0);
+        sweep = QSP_LOADING_ARCDEG;
     }
 
+    int thickness = wxMax(2, rect.GetWidth() / 8);
+    wxRect circle(rect);
+    circle.Deflate(thickness / 2);
+    if (circle.GetWidth() < 4 || circle.GetHeight() < 4) return;
+
+    /* The track is the whole circle the head runs on. It has to be there to
+       close the shape, and quiet enough not to compete with the head. */
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
-    dc.SetPen(wxPen(m_backColor.ChangeLightness(isDark ? 150 : 55)));
-    dc.DrawRectangle(rect);
+    dc.SetPen(wxPen(Mix(m_backColor, m_textColor, IsDark() ? 18 : 13), thickness));
+    dc.DrawEllipse(circle);
+
+    if (sweep >= 359.5) return;
+
+    /* wxDC angles run counter-clockwise from three o'clock and the arc is
+       drawn from the first to the second, so the head's two ends swap. */
+    dc.SetPen(wxPen(GetAccentColor(), thickness));
+    dc.DrawEllipticArc(circle.x, circle.y, circle.GetWidth(), circle.GetHeight(),
+                       90.0 - (head + sweep), 90.0 - head);
 }
 
 void QSPLoadingOverlay::OnPaint(wxPaintEvent& WXUNUSED(event))
 {
-    wxAutoBufferedPaintDC dc(this);
+    /* Buffered by hand rather than through wxAutoBufferedPaintDC, because
+       what wxGCDC can be built over is the memory DC this gives us on every
+       platform, and the ring is the one thing here that needs the graphics
+       context's antialiasing. */
+    wxBufferedPaintDC dc(this);
     wxSize size(GetClientSize());
-    bool isDark = IsDark();
-    wxColour face(m_backColor.ChangeLightness(isDark ? 118 : 100));
 
     /* The backdrop hides whatever the panes were showing. A half-drawn game
-       behind a loading message is worse than no game at all: the reader
+       behind a loading spinner is worse than no game at all: the reader
        cannot tell which of the two is the truth. */
     dc.SetPen(*wxTRANSPARENT_PEN);
     dc.SetBrush(wxBrush(m_backColor));
     dc.DrawRectangle(0, 0, size.GetWidth(), size.GetHeight());
 
-    wxRect card(GetCardRect());
-    DrawPanel(dc, card);
-
-    int pad = FromDIP(18);
-    int spinnerSize = FromDIP(34);
-    int gap = FromDIP(16);
-    wxRect inner(card.x + pad, card.y + pad, card.GetWidth() - pad * 2, card.GetHeight() - pad * 2);
-    if (inner.GetWidth() < FromDIP(60)) return;
-
-    DrawSpinner(dc, wxRect(inner.x, inner.y, spinnerSize, spinnerSize));
-
-    int textX = inner.x + spinnerSize + gap;
-    int textWidth = inner.GetRight() - textX + 1;
-    if (textWidth < FromDIP(40)) return;
-
-    wxFont stageFont(GetFont());
-    stageFont.MakeBold();
-    dc.SetFont(stageFont);
-    dc.SetTextForeground(m_textColor);
-    wxString stage(wxControl::Ellipsize(m_stage, dc, wxELLIPSIZE_END, textWidth));
-    dc.DrawText(stage, textX, inner.y);
-    int lineHeight = dc.GetTextExtent(stage).GetHeight();
-
-    dc.SetFont(GetFont());
-    dc.SetTextForeground(Mix(m_textColor, face, 35));
-    /* The middle of a long path says the least, so that is what goes */
-    wxString detail(wxControl::Ellipsize(m_detail, dc, wxELLIPSIZE_MIDDLE, textWidth));
-    int detailY = inner.y + lineHeight + FromDIP(4);
-    dc.DrawText(detail, textX, detailY);
-    int detailHeight = dc.GetTextExtent(detail).GetHeight();
-
-    int barHeight = FromDIP(8);
-    int barY = inner.GetBottom() - barHeight - FromDIP(2) - dc.GetCharHeight() - FromDIP(6);
-    if (barY < detailY + detailHeight + FromDIP(6))
-        barY = detailY + detailHeight + FromDIP(6);
-    DrawBar(dc, wxRect(inner.x, barY, inner.GetWidth(), barHeight));
-
-    /* The status line under the bar: how far the measurable step has got, or,
-       once the wait has gone on long enough to worry anyone, why it has. */
-    wxString status;
-    if (m_total > 0)
-        status = wxString::Format(wxT("%s / %s"), FormatSize(wxMin(m_done, m_total)), FormatSize(m_total));
-    else if (m_elapsed.Time() >= QSP_LOADING_HINTAFTER)
-        status = wxString::Format(_("Large games take a while to unpack - %d s so far"),
-                                  (int)(m_elapsed.Time() / 1000));
-
-    if (!status.IsEmpty())
+#if wxUSE_GRAPHICS_CONTEXT
+    wxGCDC gcdc(dc);
+    if (gcdc.IsOk())
     {
-        dc.SetTextForeground(Mix(m_textColor, face, 50));
-        status = wxControl::Ellipsize(status, dc, wxELLIPSIZE_END, inner.GetWidth());
-        dc.DrawText(status, inner.x, barY + barHeight + FromDIP(6));
+        DrawSpinner(gcdc, GetSpinnerRect());
+        return;
     }
+#endif
+    DrawSpinner(dc, GetSpinnerRect());
 }
 
 void QSPLoadingOverlay::OnEraseBackground(wxEraseEvent& WXUNUSED(event))

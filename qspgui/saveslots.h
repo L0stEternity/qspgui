@@ -62,8 +62,11 @@
         void Remember(int slot, const wxString &location);
         void Forget(int slot);
 
-        /* "3: forest clearing - 2026-09-18 14:02", or "3: empty" */
-        wxString Describe(int slot) const;
+        /* Throws the slot away: the save file first, then what the sidecar
+           says about it. False when there was nothing there or the file could
+           not be removed - and in the latter case the sidecar line is left
+           alone, so the slot still describes the save that is still on disk. */
+        bool Delete(int slot);
 
     private:
         wxString GetSidecarPath() const;

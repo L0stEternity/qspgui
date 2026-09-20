@@ -18,6 +18,7 @@
 #include <limits.h>
 
 #include "frame.h"
+#include "saveslotsdlg.h"
 #include "comtools.h"
 #include "callbacks_gui.h"
 #include "devserver.h"
@@ -115,9 +116,7 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MENU(ID_QUICKSAVE, QSPFrame::OnQuickSave)
     EVT_MENU(ID_QUICKSAVESLOT, QSPFrame::OnQuickSaveSlot)
     EVT_MENU(ID_QUICKLOADSLOT, QSPFrame::OnQuickLoadSlot)
-    EVT_MENU_RANGE(ID_SAVESLOT1, ID_SAVESLOT9, QSPFrame::OnSaveToSlot)
-    EVT_MENU_RANGE(ID_LOADSLOT1, ID_LOADSLOT9, QSPFrame::OnLoadFromSlot)
-    EVT_MENU_OPEN(QSPFrame::OnMenuOpen)
+    EVT_MENU(ID_SAVESLOTS, QSPFrame::OnSaveSlots)
     EVT_MENU(ID_SELECTFONT, QSPFrame::OnSelectFont)
     EVT_MENU(ID_USEFONTSIZE, QSPFrame::OnUseFontSize)
     EVT_MENU(ID_SELECTFONTCOLOR, QSPFrame::OnSelectFontColor)
@@ -201,18 +200,8 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_gameMenu->Append(ID_QUICKSAVESLOT, wxT("-"));
     m_gameMenu->Append(ID_QUICKLOADSLOT, wxT("-"));
     // ------------
-    /* The slot labels are the slots' contents, so they are filled in when the
-       menu opens rather than here - at this point no game is even loaded. */
-    m_saveSlotsMenu = new wxMenu;
-    m_loadSlotsMenu = new wxMenu;
-    for (int slot = 1; slot <= QSPSaveSlots::Count; ++slot)
-    {
-        m_saveSlotsMenu->Append(ID_SAVESLOT1 + slot - 1, wxT("-"));
-        m_loadSlotsMenu->Append(ID_LOADSLOT1 + slot - 1, wxT("-"));
-    }
     m_gameMenu->AppendSeparator();
-    m_gameMenu->Append(ID_SAVETOSLOT, wxT("-"), m_saveSlotsMenu);
-    m_gameMenu->Append(ID_LOADFROMSLOT, wxT("-"), m_loadSlotsMenu);
+    m_gameMenu->Append(ID_SAVESLOTS, wxT("-"));
     // ------------
     wxMenu *wndsMenu = new wxMenu;
     wndsMenu->Append(ID_TOGGLEOBJS, wxT("-"));
@@ -463,8 +452,7 @@ void QSPFrame::EnableControls(bool status, bool isExtended)
     m_gameMenu->Enable(ID_QUICKSAVE, status);
     m_gameMenu->Enable(ID_QUICKSAVESLOT, status);
     m_gameMenu->Enable(ID_QUICKLOADSLOT, status);
-    m_gameMenu->Enable(ID_SAVETOSLOT, status);
-    m_gameMenu->Enable(ID_LOADFROMSLOT, status);
+    m_gameMenu->Enable(ID_SAVESLOTS, status);
     m_settingsMenu->Enable(ID_TOGGLEOBJS, status);
     m_settingsMenu->Enable(ID_TOGGLEACTS, status);
     m_settingsMenu->Enable(ID_TOGGLEDESC, status);
@@ -893,8 +881,7 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_QUICKSAVE, _("&Quicksave\tCtrl-S"));
     menuBar->SetLabel(ID_QUICKSAVESLOT, _("Quick save &slot\tF5"));
     menuBar->SetLabel(ID_QUICKLOADSLOT, _("Load quick save s&lot\tF9"));
-    menuBar->SetLabel(ID_SAVETOSLOT, _("Save to slo&t"));
-    menuBar->SetLabel(ID_LOADFROMSLOT, _("Load from slo&t"));
+    menuBar->SetLabel(ID_SAVESLOTS, _("Save slo&ts...\tF6"));
     menuBar->SetLabel(ID_TOGGLEOBJS, _("&Objects\tCtrl-1"));
     menuBar->SetLabel(ID_TOGGLEACTS, _("&Actions\tCtrl-2"));
     menuBar->SetLabel(ID_TOGGLEDESC, _("A&dditional desc\tCtrl-3"));
@@ -1274,20 +1261,24 @@ void QSPFrame::OpenGameFile(const wxString& fullPath)
 
 bool QSPFrame::OpenGameState(const wxString& fullPath)
 {
-    QSPLoadingScope loading(this, _("Loading the saved game"), wxFileName(fullPath).GetFullName());
-
     std::vector<char> state;
     std::atomic<wxFileOffset> read(0), size(0);
     bool isRead = false;
-    RunLoadingStep([&]() { isRead = QSPFileIO::Read(fullPath, state, read, size); }, &read, &size);
+    {
+        QSPLoadingScope loading(this, _("Loading the saved game"), wxFileName(fullPath).GetFullName());
+        RunLoadingStep([&]() { isRead = QSPFileIO::Read(fullPath, state, read, size); }, &read, &size);
+    }
     if (!isRead || state.empty()) return false;
 
-    /* Not moved off this thread, unlike the world: restoring a save ends by
-       calling back into the GUI - the timer, the input line, the picture, the
-       pane visibility - and finishes by running the game's own ONGLOAD. The
-       overlay still names the step, and a save is the smaller half of the
-       wait in any case. */
-    loading.SetStage(_("Restoring the saved game"));
+    /* The overlay comes down before this, and deliberately. Restoring is not
+       moved off this thread, unlike the world: it calls back into the GUI -
+       the timer, the input line, the picture, the pane visibility - and
+       finishes by running the game's own ONGLOAD, which may print, show a
+       picture or ask the reader something. An overlay over that would cover
+       game code that wants the screen, and could not be animated while the
+       thread is inside the engine besides: it would sit there frozen, which
+       reads as a hang. A save is a set of variables, not a world, so there is
+       no wait here worth covering. */
     if (!QSPOpenSavedGameFromData(&state[0], (int)state.size(), QSP_TRUE))
     {
         ShowError();
@@ -1409,22 +1400,37 @@ void QSPFrame::LoadFromNumberedSlot(int slot)
         ShowToast(wxString::Format(_("Loaded slot %d"), slot), QSP_TOAST_SUCCESS);
 }
 
-/* Rebuilt every time the menu opens rather than kept in step with the saves:
-   a slot can be written by a second copy of the player or deleted from the
-   file manager, and the menu is the only place it is ever read. */
-void QSPFrame::RefreshSlotLabels()
+/* The dialog reads the slots itself and deletes from them itself; what comes
+   back is only what it cannot do, because it drives the engine. Game events
+   are held off while it is up, the way they are for the error dialog: a timer
+   firing under a modal dialog would run the game the player is saving. */
+void QSPFrame::ShowSaveSlots()
 {
-    if (!m_saveSlotsMenu || !m_loadSlotsMenu) return;
+    if (!m_isGameOpened) return;
 
-    for (int slot = 1; slot <= QSPSaveSlots::Count; ++slot)
+    QSPSaveSlotsDlg dialog(this,
+                           &m_saveSlots,
+                           CanSaveGame(),
+                           m_desc->GetBackgroundColour(),
+                           m_desc->GetForegroundColour(),
+                           m_desc->GetTextFont()
+    );
+    bool oldToProcessEvents = m_toProcessEvents;
+    m_toProcessEvents = false;
+    int result = dialog.ShowModal();
+    m_toProcessEvents = oldToProcessEvents;
+    if (result != wxID_OK) return;
+
+    switch (dialog.GetAction())
     {
-        wxString label(m_saveSlots.Describe(slot));
-        m_saveSlotsMenu->SetLabel(ID_SAVESLOT1 + slot - 1, label);
-        m_loadSlotsMenu->SetLabel(ID_LOADSLOT1 + slot - 1, label);
-        /* An empty slot has nothing to load, but is a perfectly good place to
-           save to - so only the load side is greyed out. */
-        m_loadSlotsMenu->Enable(ID_LOADSLOT1 + slot - 1,
-                                m_isGameOpened && m_saveSlots.GetInfo(slot).isUsed);
+    case QSPSaveSlotsDlg::ACTION_SAVE:
+        SaveToNumberedSlot(dialog.GetSlot());
+        break;
+    case QSPSaveSlotsDlg::ACTION_LOAD:
+        LoadFromNumberedSlot(dialog.GetSlot());
+        break;
+    default:
+        break;
     }
 }
 
@@ -1590,24 +1596,9 @@ void QSPFrame::OnQuickLoadSlot(wxCommandEvent& WXUNUSED(event))
     QuickLoadFromSlot();
 }
 
-void QSPFrame::OnSaveToSlot(wxCommandEvent& event)
+void QSPFrame::OnSaveSlots(wxCommandEvent& WXUNUSED(event))
 {
-    SaveToNumberedSlot(event.GetId() - ID_SAVESLOT1 + 1);
-}
-
-void QSPFrame::OnLoadFromSlot(wxCommandEvent& event)
-{
-    LoadFromNumberedSlot(event.GetId() - ID_LOADSLOT1 + 1);
-}
-
-/* Filling the slot labels in on open is what keeps them true without watching
-   the filesystem. It fires for every menu, including the popup a game puts up
-   through SHOWMENU, so the work is skipped unless the Game menu is the one
-   being opened. */
-void QSPFrame::OnMenuOpen(wxMenuEvent& event)
-{
-    event.Skip();
-    if (event.GetMenu() == m_gameMenu) RefreshSlotLabels();
+    ShowSaveSlots();
 }
 
 void QSPFrame::OnSelectFont(wxCommandEvent& WXUNUSED(event))
@@ -2100,11 +2091,14 @@ void QSPFrame::OnKey(wxKeyEvent& event)
     if (event.GetKeyCode() == WXK_SPACE)
         m_keyPressedWhileDisabled = true;
 #ifdef QSPGUI_USE_WEBVIEW
-    /* Quick save / quick load are menu accelerators, and accelerators never
-       see a key pressed inside a browser pane - that one comes back to us as
-       a synthetic event instead, which is what we answer here. */
+    /* The save keys are menu accelerators, and accelerators never see a key
+       pressed inside a browser pane - that one comes back to us as a synthetic
+       event instead, which is what we answer here. Every pane counts: which of
+       them the reader last clicked in is not something a save key should turn
+       on. */
+    wxObject *source = event.GetEventObject();
     if (!event.HasModifiers() &&
-        (event.GetEventObject() == m_desc || event.GetEventObject() == m_vars))
+        (source == m_desc || source == m_vars || source == m_objects || source == m_actions))
     {
         switch (event.GetKeyCode())
         {
@@ -2113,6 +2107,9 @@ void QSPFrame::OnKey(wxKeyEvent& event)
             return;
         case WXK_F9:
             QuickLoadFromSlot();
+            return;
+        case WXK_F6:
+            ShowSaveSlots();
             return;
         }
     }
