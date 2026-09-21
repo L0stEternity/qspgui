@@ -107,6 +107,12 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+') {
     throw "Version '$Version' must start with MAJOR.MINOR.PATCH - CMake parses the numeric part out of it"
 }
 
+# What the player will actually show. The build keeps the full string as its
+# id, but strips git describe's commits-ahead/hash/dirty tail before putting a
+# version in front of the user; CMakeLists.txt does the same, and this is only
+# so the summary below says what the title bar will say.
+$displayVersion = $Version -replace '-dirty$', '' -replace '-[0-9]+-g[0-9a-fA-F]+$', ''
+
 $archTag = if ($Arch -eq 'Win32') { 'win32' } else { 'x64' }
 if (-not $BuildDir) { $BuildDir = Join-Path $root "build_release_$archTag" }
 if (-not [System.IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $root $OutDir }
@@ -117,7 +123,10 @@ $stageRoot = Join-Path $BuildDir 'stage'
 $distDir = Join-Path $OutDir $packageName
 
 Write-Host "QSP Classic release build" -ForegroundColor Green
-Write-Host "  version   : $Version"
+Write-Host "  version   : $displayVersion"
+if ($displayVersion -ne $Version) {
+    Write-Host "  build id  : $Version"
+}
 Write-Host "  platform  : $Arch"
 Write-Host "  renderer  : $renderer"
 Write-Host "  build dir : $BuildDir"

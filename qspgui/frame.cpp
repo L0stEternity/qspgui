@@ -487,19 +487,9 @@ void QSPFrame::ShowPane(wxWindowID id, bool toShow)
             {
                 if (!toShow)
                 {
-                    /* Freezing belongs around an actual relayout and nowhere
-                       else. Freeze() recurses into every child and Thaw()
-                       follows with a refresh, which ordinary controls satisfy
-                       synchronously - but a browser control re-composites on
-                       its own schedule, so each needless cycle shows as a
-                       blank frame. Games call this on every SHOWSTAT/SHOWOBJS,
-                       almost always with the pane already in the state asked
-                       for, so freezing up front cost a flash per game tick. */
-                    wxON_BLOCK_EXIT_THIS0(QSPFrame::Thaw);
-                    Freeze();
                     m_manager->RestorePane(*pane);
                     pane->Hide();
-                    m_manager->Update();
+                    RequestManagerUpdate();
                 }
             }
             else if (pane->HasFlag(wxAuiPaneInfo::savedHiddenState) == toShow)
@@ -514,10 +504,8 @@ void QSPFrame::ShowPane(wxWindowID id, bool toShow)
 }
 
 /* Every wxAuiManager::Update() tears down and rebuilds the whole dock layout,
-   and a single action can toggle several panes. Freeze() hides the half-built
-   result for ordinary controls, but a wxWebView is a child window of another
-   process and keeps painting through it, so each rebuild shows as a blink with
-   duplicated captions. Collapse a burst of toggles into one relayout. */
+   and a single action can toggle several panes. Collapse a burst of toggles
+   into one relayout. */
 void QSPFrame::RequestManagerUpdate()
 {
     if (m_isManagerUpdatePending) return;
@@ -525,12 +513,16 @@ void QSPFrame::RequestManagerUpdate()
     CallAfter(&QSPFrame::DoManagerUpdate);
 }
 
+/* Deliberately not frozen. Freeze() on Windows is WM_SETREDRAW, which works by
+   clearing the window's visible bit - and visibility is inherited, so every
+   browser pane in the frame counts as hidden until Thaw(), and then has to be
+   re-presented from nothing. A VIEW that only opens the picture blanked the
+   description, the lists and the menu bar for a frame. wxAUI already repaints
+   exactly the panes whose rectangle changed, and nothing else. */
 void QSPFrame::DoManagerUpdate()
 {
     if (!m_isManagerUpdatePending) return;
     m_isManagerUpdatePending = false;
-    wxON_BLOCK_EXIT_THIS0(QSPFrame::Thaw);
-    Freeze();
     m_manager->Update();
 }
 
@@ -789,7 +781,8 @@ wxString QSPFrame::BuildErrorReport(const QSPErrorInfo &errorInfo) const
     /* The file's name, not where this particular machine happens to keep it */
     if (!m_gameFilePath.IsEmpty())
         report << wxT("  Game      : ") << wxFileName(m_gameFilePath).GetFullName() << wxT("\n");
-    report << wxT("  Player    : ") << QSP_VER << wxT(" (") << QSPTools::GetPlatform()
+    /* A bug report wants the exact commit, so this line takes the build id */
+    report << wxT("  Player    : ") << QSP_BUILD << wxT(" (") << QSPTools::GetPlatform()
 #ifdef QSPGUI_USE_WEBVIEW
            << wxT(", browser renderer)\n");
 #else
@@ -1804,12 +1797,17 @@ void QSPFrame::OnAbout(wxCommandEvent& WXUNUSED(event))
     QSPString version = QSPGetVersion();
     QSPString libCompiledDate = QSPGetCompiledDateTime();
     wxString guiCompiledDate(wxT(__DATE__) wxT(", ") wxT(__TIME__));
-    info.SetDescription(wxString::Format(
+    wxString description(wxString::Format(
         _("Engine version: %s\nEngine compiled: %s\nGUI compiled: %s"),
         qspToWxString(version).wx_str(),
         qspToWxString(libCompiledDate).wx_str(),
         guiCompiledDate.wx_str()
     ));
+    /* Off a tag these are the same string and there is nothing to add; between
+       tags, say which commit this is - down here, not in the heading */
+    if (wxStrcmp(QSP_BUILD, QSP_VER) != 0)
+        description << wxT("\n") << wxString::Format(_("Build: %s"), QSP_BUILD);
+    info.SetDescription(description);
     info.SetWebSite(wxT("https://qsp.org"));
     // ----
     wxAboutBox(info, this);

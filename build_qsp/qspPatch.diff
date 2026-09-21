@@ -1,0 +1,14 @@
+diff --git a/qsp/statements.c b/qsp/statements.c
+index b5ee65b..80ca922 100644
+--- a/qsp/statements.c
++++ b/qsp/statements.c
+@@ -273,7 +273,9 @@ void qspInitStats(void)
+     qspAddStatName(qspStatCloseAll, QSP_STATIC_STR(QSP_FMT("CLOSE ALL")), QSP_TRUE, 1);
+ 
+     qspAddStatName(qspStatIncLib, QSP_STATIC_STR(QSP_FMT("INCLIB")), QSP_TRUE, 2);
++    qspAddStatName(qspStatIncLib, QSP_STATIC_STR(QSP_FMT("ADDQST")), QSP_TRUE, 2);
+     qspAddStatName(qspStatFreeLib, QSP_STATIC_STR(QSP_FMT("FREELIB")), QSP_TRUE, 2);
++    qspAddStatName(qspStatFreeLib, QSP_STATIC_STR(QSP_FMT("KILLQST")), QSP_TRUE, 2);
+ 
+     qspAddStatName(qspStatOpenGame, QSP_STATIC_STR(QSP_FMT("OPENGAME")), QSP_TRUE, 2);
+     qspAddStatName(qspStatSaveGame, QSP_STATIC_STR(QSP_FMT("SAVEGAME")), QSP_TRUE, 2);

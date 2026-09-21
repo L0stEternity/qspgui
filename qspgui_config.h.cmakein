@@ -1,7 +1,15 @@
 #ifndef QSPGUI_CONFIG_H
 #define QSPGUI_CONFIG_H
 
-#define QSPGUI_VER_STR "@APP_VERSION@"
+/* The release this build claims to be - what the title bar, the About box and
+   the file properties show. */
+#define QSPGUI_VER_STR "@APP_VERSION_DISPLAY@"
+
+/* The exact build, as `git describe` names it: the same thing plus the commits
+   since the tag, the commit hash and a "-dirty" marker. Equal to QSPGUI_VER_STR
+   for a build straight off a tag; shown only where the extra precision earns
+   its space. */
+#define QSPGUI_BUILD_STR "@APP_VERSION@"
 
 /* The numeric parts, for places that cannot take a string: the Windows
    VERSIONINFO resource wants four comma-separated integers. A version such as

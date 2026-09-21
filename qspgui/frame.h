@@ -65,6 +65,7 @@
     #endif
 
     #define QSP_VER wxT(QSPGUI_VER_STR)
+    #define QSP_BUILD wxT(QSPGUI_BUILD_STR)
     #define QSP_LOGO wxT("Quest Soft Player ") QSP_VER
 
     enum

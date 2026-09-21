@@ -6,6 +6,17 @@ endif()
 
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" CMAKE_APP_VERSION "${APP_VERSION}")
 
+# `git describe` answers with things like "5.9.5-10-gab27fc1(-dirty)": precise
+# about which commit a build came from, but not what anyone wants to read in a
+# title bar. Keep the two apart. APP_VERSION_DISPLAY is the release the build
+# claims to be, and is all the UI shows; APP_VERSION stays the full build id,
+# for the diagnostics report and for one line of the About box when the two
+# differ. A pre-release suffix such as "5.9.6-b3" names the release, so it
+# survives here - only the commits-ahead/hash/dirty tail is dropped. Two
+# passes because CMake rejects a regex that is able to match nothing at all.
+string(REGEX REPLACE "-dirty$" "" APP_VERSION_DISPLAY "${APP_VERSION}")
+string(REGEX REPLACE "-[0-9]+-g[0-9a-fA-F]+$" "" APP_VERSION_DISPLAY "${APP_VERSION_DISPLAY}")
+
 project(qspgui VERSION ${CMAKE_APP_VERSION} HOMEPAGE_URL "https://qsp.org")
 
 include(CMakePackageConfigHelpers)
@@ -54,6 +65,8 @@ FetchContent_Declare(qsp-custom
 	SUBBUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/qsp-download"
 	SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/qsp-src"
 	BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/qsp-build"
+	# Keeps ADDQST/KILLQST working as aliases of INCLIB/FREELIB for older games
+	PATCH_COMMAND git checkout -- . && git apply --check --apply --ignore-whitespace "${CMAKE_CURRENT_SOURCE_DIR}/build_qsp/qspPatch.diff"
 )
 FetchContent_MakeAvailable(qsp-custom)
 

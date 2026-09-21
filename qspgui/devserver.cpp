@@ -1352,14 +1352,14 @@ bool QSPDevServer::AppendVar(QSPJsonBuilder &builder, const wxString &name, int 
    completion should not be full of them. */
 static const wxChar *g_devKeywords[] =
 {
-    wxT("ACT"), wxT("ADDOBJ"), wxT("AND"), wxT("ARRCOMP"), wxT("ARRITEM"), wxT("ARRPACK"),
+    wxT("ACT"), wxT("ADDOBJ"), wxT("ADDQST"), wxT("AND"), wxT("ARRCOMP"), wxT("ARRITEM"), wxT("ARRPACK"),
     wxT("ARRPOS"), wxT("ARRSIZE"), wxT("ARRTYPE"), wxT("CLA"), wxT("CLEAR"), wxT("CLOSE"),
     wxT("CLR"), wxT("CLS"), wxT("CMDCLEAR"), wxT("CMDCLR"), wxT("COPYARR"), wxT("COUNTOBJ"),
     wxT("CURACTS"), wxT("CURLOC"), wxT("CUROBJS"), wxT("DELACT"), wxT("DELOBJ"), wxT("DESC"),
     wxT("DYNAMIC"), wxT("DYNEVAL"), wxT("END"), wxT("EXEC"), wxT("EXIT"), wxT("FREELIB"),
     wxT("FUNC"), wxT("GETOBJ"), wxT("GOSUB"), wxT("GOTO"), wxT("GS"), wxT("GT"), wxT("IF"),
     wxT("IIF"), wxT("INCLIB"), wxT("INPUT"), wxT("INSTR"), wxT("ISNUM"), wxT("ISPLAY"),
-    wxT("JUMP"), wxT("KILLALL"), wxT("KILLOBJ"), wxT("KILLVAR"), wxT("LCASE"), wxT("LEN"),
+    wxT("JUMP"), wxT("KILLALL"), wxT("KILLOBJ"), wxT("KILLQST"), wxT("KILLVAR"), wxT("LCASE"), wxT("LEN"),
     wxT("LET"), wxT("LOC"), wxT("LOCAL"), wxT("LOOP"), wxT("MAINTXT"), wxT("MAX"), wxT("MENU"),
     wxT("MID"), wxT("MIN"), wxT("MOD"), wxT("MODOBJ"), wxT("MSECSCOUNT"), wxT("MSG"),
     wxT("NL"), wxT("NO"), wxT("OBJ"), wxT("OPENGAME"), wxT("OPENQST"), wxT("OR"), wxT("P"),
