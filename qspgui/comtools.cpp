@@ -117,15 +117,19 @@ bool QSPFileIO::Write(const wxString &path, const void *data, size_t size)
     return file.Write(data, size) == size;
 }
 
-/* 64 KB covers an ordinary session in one call; the retries are for the games
-   that carry a large array around. The count is capped because the loop's exit
-   depends on the engine reporting a size that eventually fits, and a bug there
-   would otherwise hang the player instead of failing the save. */
+/* Every failed attempt serializes the whole state and runs the game's ONGSAVE
+   again, so the buffer starts at the last save's size plus headroom: a game with
+   a multi-megabyte save pays for one pass, not two, after its first save.
+   The count is capped because the loop's exit depends on the engine reporting a
+   size that eventually fits, and a bug there would otherwise hang the player
+   instead of failing the save. */
 bool QSPGameState::Save(std::vector<char> &data, bool toRefreshUI)
 {
+    static int lastSize = 0;
     const int maxAttempts = 8;
     QSP_BOOL refresh = toRefreshUI ? QSP_TRUE : QSP_FALSE;
     int size = 64 * 1024;
+    if (lastSize + lastSize / 8 > size) size = lastSize + lastSize / 8;
 
     data.resize((size_t)size);
     for (int attempt = 0; attempt < maxAttempts; ++attempt)
@@ -133,6 +137,7 @@ bool QSPGameState::Save(std::vector<char> &data, bool toRefreshUI)
         if (QSPSaveGameAsData(&data[0], &size, refresh))
         {
             data.resize((size_t)size);
+            lastSize = size;
             return true;
         }
         /* Zero means the save itself failed, not that the buffer was small */

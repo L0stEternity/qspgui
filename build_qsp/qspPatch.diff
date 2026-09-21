@@ -12,3 +12,53 @@ index b5ee65b..80ca922 100644
  
      qspAddStatName(qspStatOpenGame, QSP_STATIC_STR(QSP_FMT("OPENGAME")), QSP_TRUE, 2);
      qspAddStatName(qspStatSaveGame, QSP_STATIC_STR(QSP_FMT("SAVEGAME")), QSP_TRUE, 2);
+diff --git a/qsp/text.c b/qsp/text.c
+index 741312c..1ecd712 100644
+--- a/qsp/text.c
++++ b/qsp/text.c
+@@ -94,7 +94,7 @@ int qspSplitStr(QSPString str, QSPString delim, QSPString **res)
+         newStr = qspCopyToNewText(qspStringFromPair(str.Str, delimPos));
+         if (count >= bufSize)
+         {
+-            bufSize = count + 16;
++            bufSize *= 2; /* a save splits into a million fields; linear growth is quadratic */
+             ret = (QSPString *)realloc(ret, bufSize * sizeof(QSPString));
+         }
+         ret[count++] = newStr;
+diff --git a/qsp/text.h b/qsp/text.h
+index a30ee78..e7e51f7 100644
+--- a/qsp/text.h
++++ b/qsp/text.h
+@@ -353,6 +353,14 @@
+         if (buf->Str) free(buf->Str);
+     }
+ 
++    /* Grow by at least half the current length: a fixed increment makes building
++       a large string (a multi-megabyte save) quadratic in reallocations */
++    INLINE int qspBufStringGrowth(QSPBufString *buf)
++    {
++        int half = buf->Len / 2;
++        return (half > buf->CapacityIncrement ? half : buf->CapacityIncrement);
++    }
++
+     INLINE QSP_BOOL qspAddBufText(QSPBufString *dest, QSPString val)
+     {
+         int valLen = qspStrLen(val);
+@@ -362,7 +370,7 @@
+             {
+                 if (dest->Len + valLen > dest->Capacity)
+                 {
+-                    dest->Capacity = dest->Len + valLen + dest->CapacityIncrement;
++                    dest->Capacity = dest->Len + valLen + qspBufStringGrowth(dest);
+                     dest->Str = (QSP_CHAR *)realloc(dest->Str, dest->Capacity * sizeof(QSP_CHAR));
+                 }
+                 memcpy(dest->Str + dest->Len, val.Str, valLen * sizeof(QSP_CHAR));
+@@ -386,7 +394,7 @@
+         {
+             if (dest->Len + QSP_CHAR_LEN > dest->Capacity)
+             {
+-                dest->Capacity = dest->Len + QSP_CHAR_LEN + dest->CapacityIncrement;
++                dest->Capacity = dest->Len + QSP_CHAR_LEN + qspBufStringGrowth(dest);
+                 dest->Str = (QSP_CHAR *)realloc(dest->Str, dest->Capacity * sizeof(QSP_CHAR));
+             }
+             dest->Str[dest->Len] = ch;
