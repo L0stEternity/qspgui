@@ -209,13 +209,22 @@ int QSPCallbacks::RefreshInt(QSP_BOOL isForced, QSP_BOOL isNewDesc)
         wxArrayString cssFiles, jsFiles;
         qspGetStringList(QSP_STATIC_STR(QSP_FMT("USERCSSFILE")), cssFiles);
         qspGetStringList(QSP_STATIC_STR(QSP_FMT("USERJSFILE")), jsFiles);
-        m_frame->GetDesc()->SetUserStyles(userCss, cssFiles);
-        m_frame->GetVars()->SetUserStyles(userCss, cssFiles);
+        /* qQSP's custom.css and custom.js go first, so whatever the game names
+           itself still has the last word, and only into the description panes:
+           qQSP's lists and picture are not HTML, so a sheet written for it was
+           never meant to reach them. A game that names them too gets them once. */
+        wxArrayString descCssFiles(cssFiles), descJsFiles(jsFiles);
+        if (m_frame->HasCustomCss() && descCssFiles.Index(wxT("custom.css"), false) == wxNOT_FOUND)
+            descCssFiles.Insert(wxT("custom.css"), 0);
+        if (m_frame->HasCustomJs() && descJsFiles.Index(wxT("custom.js"), false) == wxNOT_FOUND)
+            descJsFiles.Insert(wxT("custom.js"), 0);
+        m_frame->GetDesc()->SetUserStyles(userCss, descCssFiles);
+        m_frame->GetVars()->SetUserStyles(userCss, descCssFiles);
         m_frame->GetActions()->SetUserStyles(userCss, cssFiles);
         m_frame->GetObjects()->SetUserStyles(userCss, cssFiles);
         m_frame->GetImgView()->SetUserStyles(userCss, cssFiles);
-        m_frame->GetDesc()->SetUserScripts(userJs, jsFiles);
-        m_frame->GetVars()->SetUserScripts(userJs, jsFiles);
+        m_frame->GetDesc()->SetUserScripts(userJs, descJsFiles);
+        m_frame->GetVars()->SetUserScripts(userJs, descJsFiles);
     }
     // -------------------------------
     m_frame->ApplyParams();

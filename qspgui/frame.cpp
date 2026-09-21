@@ -296,6 +296,8 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     SetOverallVolume(100);
     m_savedGamePath.Clear();
     m_worldPath.Clear();
+    m_hasCustomCss = false;
+    m_hasCustomJs = false;
     m_toQuit = false;
     m_keyPressedWhileDisabled = false;
     m_isGameOpened = false;
@@ -620,6 +622,12 @@ void QSPFrame::UpdateGamePath(const wxString &fullPath)
 {
     wxFileName fileName(fullPath, wxPATH_DOS);
     m_worldPath = fileName.GetPath(wxPATH_GET_VOLUME | wxPATH_GET_SEPARATOR);
+    /* qQSP picks these two up from the game folder without being asked, so a
+       game moving over from it may rely on them and never name them in
+       $USERCSSFILE / $USERJSFILE. Checked once per folder, as qQSP does, rather
+       than on every refresh. */
+    m_hasCustomCss = wxFileExists(m_worldPath + wxT("custom.css"));
+    m_hasCustomJs = wxFileExists(m_worldPath + wxT("custom.js"));
     NotifyPanesOfGamePath();
 }
 
@@ -799,6 +807,9 @@ void QSPFrame::ShowError()
     if (m_toQuit) return;
     QSPErrorInfo errorInfo = QSPGetLastErrorData();
     if (!errorInfo.ErrorNum) return; // error is undefined
+    /* An error never goes under the overlay: it would cover the dialog and
+       swallow the clicks meant for it. Whatever was loading has failed. */
+    if (m_isLoading) EndLoading();
     if (m_devServer) m_devServer->NotifyError();
     wxString locName(qspToWxString(errorInfo.LocName));
     wxString errorDesc(qspToWxString(errorInfo.ErrorDesc));
@@ -1199,47 +1210,57 @@ void QSPFrame::RunLoadingStep(const std::function<void()> &work,
 
 void QSPFrame::OpenGameFile(const wxString& fullPath)
 {
-    QSPLoadingScope loading(this, _("Opening the game"), wxFileName(fullPath).GetFullName());
-
-    /* Existing is not the same as readable: another program may be holding the
-       file open while it writes it, and an empty file is not a world. */
     std::vector<char> world;
-    std::atomic<wxFileOffset> read(0), size(0);
-    bool isRead = false;
-    RunLoadingStep([&]() { isRead = QSPFileIO::Read(fullPath, world, read, size); }, &read, &size);
-    if (!isRead || world.empty()) return;
-
-    /* The long one: tens of megabytes of ciphered text decoded on one core.
-       Off the UI thread because QSPLoadGameWorldFromData is pure - it parses
-       into the engine's own arrays and calls nothing back out - so the only
-       rule to keep is that this thread does not touch the engine meanwhile,
-       which is what RunLoadingStep is for. */
-    loading.SetStage(_("Unpacking the game world"));
     bool isLoaded = false;
-    RunLoadingStep([&]() {
-        isLoaded = (QSPLoadGameWorldFromData(&world[0], (int)world.size(), QSP_TRUE) != QSP_FALSE);
-    });
+    {
+        QSPLoadingScope loading(this, _("Opening the game"), wxFileName(fullPath).GetFullName());
+
+        /* Existing is not the same as readable: another program may be holding the
+           file open while it writes it, and an empty file is not a world. */
+        std::atomic<wxFileOffset> read(0), size(0);
+        bool isRead = false;
+        RunLoadingStep([&]() { isRead = QSPFileIO::Read(fullPath, world, read, size); }, &read, &size);
+        if (!isRead || world.empty()) return;
+
+        /* The long one: tens of megabytes of ciphered text decoded on one core.
+           Off the UI thread because QSPLoadGameWorldFromData is pure - it parses
+           into the engine's own arrays and calls nothing back out - so the only
+           rule to keep is that this thread does not touch the engine meanwhile,
+           which is what RunLoadingStep is for. */
+        loading.SetStage(_("Unpacking the game world"));
+        RunLoadingStep([&]() {
+            isLoaded = (QSPLoadGameWorldFromData(&world[0], (int)world.size(), QSP_TRUE) != QSP_FALSE);
+        });
+
+        if (isLoaded)
+        {
+            loading.SetStage(_("Starting the game"));
+
+            /* Reloading settings rebuilds the UI and can pump the event loop, so
+               m_toQuit can become true part way through. The bytes are owned by
+               the vector, which is what lets those paths simply return. */
+            UpdateGameFile(fullPath);
+            m_isGameOpened = true;
+
+            wxString configString(m_worldPath + QSP_CONFIG);
+            wxString newPath(wxFileExists(configString) ? configString : m_configDefPath);
+            if (newPath != m_configPath)
+            {
+                SaveSettings();
+                m_configPath = newPath;
+                LoadSettings();
+            }
+        }
+    }
+
+    /* The overlay is down by here, for the same reason as in OpenGameState:
+       an error dialog under it cannot be seen or clicked - the overlay's timer
+       keeps running inside the dialog's modal loop and puts it on top - and
+       the start location is game code that may print, ask or fail. */
     if (!isLoaded)
     {
         ShowError();
         return;
-    }
-    loading.SetStage(_("Starting the game"));
-
-    /* Everything below can pump the event loop - reloading settings rebuilds
-       the UI, and entering the start location runs game code - so m_toQuit can
-       become true part way through. The bytes are owned by the vector, which
-       is what lets those paths simply return. */
-    UpdateGameFile(fullPath);
-    m_isGameOpened = true;
-
-    wxString configString(m_worldPath + QSP_CONFIG);
-    wxString newPath(wxFileExists(configString) ? configString : m_configDefPath);
-    if (newPath != m_configPath)
-    {
-        SaveSettings();
-        m_configPath = newPath;
-        LoadSettings();
     }
 
     wxCommandEvent dummy;

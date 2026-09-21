@@ -48,6 +48,12 @@ media formats and CSS. The classic renderer remains the default and is unchanged
   appears and whenever its text or its file list changes — never once per
   refresh — and the inline block waits for the files, so it can call into them.
 
+  For games coming from qQSP, a `custom.css` and `custom.js` next to the world
+  file are loaded automatically, as qQSP does, without being named in any
+  variable. They go into the two description panes only (the only HTML qQSP put
+  them in) and ahead of anything in `$USERCSSFILE` / `$USERJSFILE`, so the
+  game's own files still win. The folder is checked when the game is opened.
+
   `<script>` tags inside an HTML-mode description now execute as well, once the
   content is on screen rather than while it is still staged off screen.
 

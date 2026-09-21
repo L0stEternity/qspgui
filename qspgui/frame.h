@@ -170,6 +170,9 @@
         bool IsValidFullPath(const wxString &path) const;
         wxString GetGamePath() const { return m_worldPath; }
         wxString GetGameFilePath() const { return m_gameFilePath; }
+        /* custom.css / custom.js next to the world file, which qQSP loads on its own */
+        bool HasCustomCss() const { return m_hasCustomCss; }
+        bool HasCustomJs() const { return m_hasCustomJs; }
         bool IsGameOpened() const { return m_isGameOpened; }
 
         /* Development API, off unless the player was started with --dev */
@@ -327,6 +330,8 @@
         // Fields
         bool m_isGameOpened;
         wxString m_worldPath;
+        bool m_hasCustomCss;
+        bool m_hasCustomJs;
         wxString m_gameFilePath;
         wxString m_savedGamePath;
         QSPDevServer *m_devServer;
