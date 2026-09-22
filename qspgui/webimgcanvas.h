@@ -28,7 +28,9 @@
        always-on-top child window because wxWidgets cannot animate inside an
        ordinary paint handler. All of that is one <img> and one line of CSS
        here - and the same document gets WebP, AVIF and APNG for free, which is
-       the whole reason the web renderer exists.
+       the whole reason the web renderer exists. A .webm/.mp4/.ogv/.mov path
+       becomes a muted, looping <video> instead, so short clips work as
+       animated pictures too.
 
        OpenFile answers whether the pane should be shown at all, so it has to
        decide before the browser has fetched anything: the file is checked on

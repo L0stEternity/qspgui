@@ -45,10 +45,10 @@ wxString QSPWebImgCanvas::BuildShellDocument()
         wxT(":root{--qsp-bg:#e0e0e0;}\n")
         wxT("html,body{margin:0;padding:0;height:100%;overflow:hidden;}\n")
         wxT("body{background-color:var(--qsp-bg);}\n")
-        /* Two stacked images for the same reason the description pane has two
-           layers: assigning a new src tears the old picture down first and the
-           browser paints the gap. The incoming one is filled while hidden and
-           they trade places once it has decoded. */
+        /* The incoming picture is built hidden on top of the current one and
+           they trade places once it has decoded, for the same reason the
+           description pane has two layers: replacing a src in place tears the
+           old picture down first and the browser paints the gap. */
         wxT(".qsp-img{position:absolute;left:0;top:0;width:100%;height:100%;")
         wxT("object-fit:contain;object-position:center;}\n")
         wxT(".qsp-hidden{visibility:hidden;}\n")
@@ -58,13 +58,11 @@ wxString QSPWebImgCanvas::BuildShellDocument()
         wxT("<style id=\"qsp-user-css\"></style>\n")
         wxT("</head>\n")
         wxT("<body>\n")
-        wxT("<img id=\"qsp-i0\" class=\"qsp-img\" alt=\"\">\n")
-        wxT("<img id=\"qsp-i1\" class=\"qsp-img qsp-hidden\" alt=\"\">\n")
         wxT("<script>\n")
         wxT("(function(){\n")
-        wxT("var imgs=[document.getElementById('qsp-i0'),document.getElementById('qsp-i1')];\n")
         wxT("var base=document.getElementById('qsp-base');\n")
-        wxT("var active=0,token=0;\n")
+        wxT("var front=null,token=0;\n")
+        wxT("var videoExt=/\\.(webm|mp4|m4v|ogv|mov)(\\?|#|$)/i;\n")
         wxT("function qspPost(m){try{window.qspHost.postMessage(m);return true;}")
         wxT("catch(err){return false;}}\n")
         wxT("window.qspSetBase=function(href){base.href=href;};\n")
@@ -92,27 +90,57 @@ wxString QSPWebImgCanvas::BuildShellDocument()
         wxT("  }\n")
         wxT("  if(userStyle.textContent!==css)userStyle.textContent=css;\n")
         wxT("};\n")
+        /* Every call gets its own element, so nothing a stale call left behind -
+           a handler, a pending swap, a half-loaded src - can touch the picture
+           on screen. A cached image both reports complete and fires load, so the
+           swap is armed twice and has to be one-shot: the old version reused two
+           fixed elements and a second swap hid the picture it had just shown. */
+        wxT("function qspDrop(el){\n")
+        wxT("  if(!el)return;\n")
+        wxT("  el.onload=el.onerror=el.onloadeddata=null;\n")
+        wxT("  if(el.tagName==='VIDEO'){try{el.pause();}catch(e){}\n")
+        wxT("    el.removeAttribute('src');try{el.load();}catch(e){}}\n")
+        wxT("  else el.removeAttribute('src');\n")
+        wxT("  if(el.parentNode)el.parentNode.removeChild(el);\n")
+        wxT("}\n")
+        wxT("var pending=null;\n")
         wxT("window.qspShow=function(src){\n")
         wxT("  var mine=++token;\n")
-        wxT("  var back=imgs[1-active];\n")
-        wxT("  var swap=function(){\n")
-        /* A newer picture has already been asked for; its swap wins. */
-        wxT("    if(mine!==token)return;\n")
-        wxT("    back.classList.remove('qsp-hidden');\n")
-        wxT("    imgs[active].classList.add('qsp-hidden');\n")
-        wxT("    imgs[active].removeAttribute('src');\n")
-        wxT("    active=1-active;\n")
-        wxT("  };\n")
-        wxT("  if(!src){\n")
-        wxT("    back.removeAttribute('src');\n")
-        wxT("    requestAnimationFrame(swap);\n")
-        wxT("    return;\n")
+        /* A newer picture has been asked for; whatever was still loading goes. */
+        wxT("  qspDrop(pending);pending=null;\n")
+        wxT("  if(!src){qspDrop(front);front=null;return;}\n")
+        wxT("  var el,done=false;\n")
+        wxT("  if(videoExt.test(src)){\n")
+        /* A picture, not a clip: silent and looping, like an animated image.
+           Muted is also what lets it autoplay without a user gesture. */
+        wxT("    el=document.createElement('video');\n")
+        wxT("    el.muted=true;el.loop=true;el.autoplay=true;el.playsInline=true;\n")
+        wxT("    el.setAttribute('muted','');el.className='qsp-img qsp-video qsp-hidden';\n")
+        wxT("  }else{\n")
+        wxT("    el=document.createElement('img');\n")
+        wxT("    el.alt='';el.className='qsp-img qsp-hidden';\n")
         wxT("  }\n")
-        wxT("  back.onload=back.onerror=function(){requestAnimationFrame(swap);};\n")
-        wxT("  back.src=src;\n")
+        wxT("  var swap=function(){\n")
+        wxT("    if(done||mine!==token)return;\n")
+        wxT("    done=true;pending=null;\n")
+        wxT("    el.onload=el.onerror=el.onloadeddata=null;\n")
+        wxT("    el.classList.remove('qsp-hidden');\n")
+        wxT("    var old=front;front=el;\n")
+        wxT("    qspDrop(old);\n")
+        wxT("    if(el.tagName==='VIDEO'){var p=el.play();if(p&&p.catch)p.catch(function(){});}\n")
+        wxT("  };\n")
+        wxT("  var arm=function(){requestAnimationFrame(swap);};\n")
+        /* rAF does not run while the pane is hidden, and a picture asked for
+           then must still be there when the pane comes back. */
+        wxT("  var armNow=function(){if(document.hidden)swap();else arm();};\n")
+        wxT("  if(el.tagName==='VIDEO')el.onloadeddata=el.onerror=armNow;\n")
+        wxT("  else el.onload=el.onerror=armNow;\n")
+        wxT("  pending=el;\n")
+        wxT("  document.body.appendChild(el);\n")
+        wxT("  el.src=src;\n")
         /* A cached picture is complete the moment src is assigned and may
            never fire load, so the swap has to be armed for that too. */
-        wxT("  if(back.complete)requestAnimationFrame(swap);\n")
+        wxT("  if(el.tagName==='IMG'&&el.complete)armNow();\n")
         wxT("};\n");
 
     wxString shell(document);
