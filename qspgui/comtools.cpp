@@ -613,3 +613,88 @@ bool QSPCode::BuildAssignment(const wxString& name, const wxString& index, const
     *code = target + wxT(" = ") + wxLongLong(numeric).ToString();
     return true;
 }
+
+namespace
+{
+    /* A size is a positive integer, optionally followed by '%'. Anything else
+       is ignored rather than guessed at, so the dialog falls back to sizing
+       itself for that side. */
+    bool ParseMsgSize(const wxString& value, int *size, bool *isPercent)
+    {
+        wxString number(value);
+        bool percent = number.EndsWith(wxT("%"), &number);
+        long result;
+        if (!number.ToLong(&result) || result <= 0) return false;
+        if (percent && result > 100) result = 100;
+        *size = (int)wxMin(result, 100000L);
+        *isPercent = percent;
+        return true;
+    }
+}
+
+bool QSPMsgOptions::Parse(wxString &text, QSPMsgOptions &options)
+{
+    static const wxString opener(wxT("<!--modal"));
+    static const wxString closer(wxT("-->"));
+    size_t length = text.length();
+    size_t start = 0;
+    while (start < length && wxIsspace(text[start])) ++start;
+    if (length - start < opener.length() ||
+        text.Mid(start, opener.length()).CmpNoCase(opener) != 0)
+        return false;
+    size_t bodyStart = start + opener.length();
+    /* "<!--modality-->" is some other comment, not this directive */
+    if (bodyStart < length && !wxIsspace(text[bodyStart]) && text[bodyStart] != wxT('-'))
+        return false;
+    size_t bodyEnd = text.find(closer, bodyStart);
+    if (bodyEnd == wxString::npos) return false;
+
+    QSPMsgOptions result;
+    wxString body(text.Mid(bodyStart, bodyEnd - bodyStart));
+    size_t pos = 0, count = body.length();
+    while (true)
+    {
+        while (pos < count && wxIsspace(body[pos])) ++pos;
+        if (pos >= count) break;
+        size_t keyStart = pos;
+        while (pos < count && !wxIsspace(body[pos]) && body[pos] != wxT('=')) ++pos;
+        wxString key(body.Mid(keyStart, pos - keyStart).Lower());
+        while (pos < count && wxIsspace(body[pos])) ++pos;
+        if (pos >= count || body[pos] != wxT('=')) continue;
+        ++pos;
+        while (pos < count && wxIsspace(body[pos])) ++pos;
+        wxString value;
+        if (pos < count && (body[pos] == wxT('"') || body[pos] == wxT('\'')))
+        {
+            wxUniChar quote = body[pos++];
+            size_t valueStart = pos;
+            while (pos < count && body[pos] != quote) ++pos;
+            value = body.Mid(valueStart, pos - valueStart);
+            if (pos < count) ++pos;
+        }
+        else
+        {
+            size_t valueStart = pos;
+            while (pos < count && !wxIsspace(body[pos])) ++pos;
+            value = body.Mid(valueStart, pos - valueStart);
+        }
+
+        if (key == wxT("w") || key == wxT("width"))
+            ParseMsgSize(value, &result.Width, &result.IsWidthPercent);
+        else if (key == wxT("h") || key == wxT("height"))
+            ParseMsgSize(value, &result.Height, &result.IsHeightPercent);
+        else if (key == wxT("title"))
+            result.Title = value;
+        else if (key == wxT("ok"))
+            result.OkLabel = value;
+    }
+
+    text = text.Mid(bodyEnd + closer.length());
+    /* The line break a game leaves after the directive would otherwise open
+       a plain-text message with an empty line */
+    size_t textStart = 0;
+    while (textStart < text.length() && wxIsspace(text[textStart])) ++textStart;
+    text.erase(0, textStart);
+    options = result;
+    return true;
+}

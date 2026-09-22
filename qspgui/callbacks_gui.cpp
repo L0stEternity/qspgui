@@ -95,6 +95,9 @@ void QSPCallbacks::Init(QSPFrame *frame)
     /* Prepare version values */
     m_versionInfo["player"] = "Classic";
     m_versionInfo["platform"] = QSPTools::GetPlatform();
+    /* Lets a game ask whether MSG understands a <!--modal ...--> directive;
+       other players answer an unknown key with an empty string */
+    m_versionInfo["modal"] = "1";
 }
 
 void QSPCallbacks::DeInit()
@@ -366,17 +369,21 @@ int QSPCallbacks::Msg(QSPString str)
     QSPDev::EngineScope engineScope;
     QSPDev::ProfScope dialogScope(QSPDev::Prof_Dialog);
     if (m_frame->ToQuit()) return 0;
+    wxString text(qspToWxString(str));
+    QSPMsgOptions options;
+    bool hasOptions = QSPMsgOptions::Parse(text, options);
     QSPMsgDlg dialog(m_frame,
         wxID_ANY,
         m_frame->GetDesc()->GetBackgroundColour(),
         m_frame->GetDesc()->GetForegroundColour(),
         m_frame->GetDesc()->GetTextFont(),
         _("Info"),
-        qspToWxString(str),
+        text,
         m_isHtml,
         m_frame
     );
-    if (m_frame->GetDevServer()) m_frame->GetDevServer()->NotifyMessage(qspToWxString(str));
+    if (hasOptions) dialog.SetOptions(options);
+    if (m_frame->GetDevServer()) m_frame->GetDevServer()->NotifyMessage(text);
     m_frame->EnableControls(false);
     dialog.ShowModal();
     m_frame->EnableControls(true);

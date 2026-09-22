@@ -19,6 +19,7 @@
 #include "comtools.h"
 
 #include <wx/clipbrd.h>
+#include <wx/display.h>
 
 wxIMPLEMENT_CLASS(QSPMsgDlg, wxDialog);
 
@@ -66,12 +67,12 @@ QSPMsgDlg::QSPMsgDlg(wxWindow* parent,
     m_btnCopy->Hide();
     sizerBottom->Add(m_btnCopy, 0, wxALL, 8);
     sizerBottom->AddStretchSpacer(1);
-    wxButton *btnOk = new wxButton(this, wxID_OK, _("OK"));
-    btnOk->SetDefault();
-    btnOk->SetFont(font);
-    btnOk->SetBackgroundColour(backColor);
-    btnOk->SetForegroundColour(fontColor);
-    sizerBottom->Add(btnOk, 0, wxALL, 8);
+    m_btnOk = new wxButton(this, wxID_OK, _("OK"));
+    m_btnOk->SetDefault();
+    m_btnOk->SetFont(font);
+    m_btnOk->SetBackgroundColour(backColor);
+    m_btnOk->SetForegroundColour(fontColor);
+    sizerBottom->Add(m_btnOk, 0, wxALL, 8);
     // ----------
     wxSizer *sizerMain = new wxBoxSizer(wxVERTICAL);
     sizerMain->Add(sizerUp, 1, wxGROW, 0);
@@ -79,17 +80,76 @@ QSPMsgDlg::QSPMsgDlg(wxWindow* parent,
     // ----------
     sizerMain->SetMinSize(MinWidth, MinHeight);
     SetSizerAndFit(sizerMain);
-    btnOk->SetFocus();
+    m_btnOk->SetFocus();
+}
+
+void QSPMsgDlg::SetOptions(const QSPMsgOptions& options)
+{
+    m_options = options;
+    if (!options.Title.IsEmpty()) SetTitle(options.Title);
+    if (!options.OkLabel.IsEmpty())
+    {
+        m_btnOk->SetLabel(options.OkLabel);
+        Layout();
+    }
 }
 
 void QSPMsgDlg::OnInitDialog(wxInitDialogEvent& WXUNUSED(event))
 {
+    if (m_options.HasSize())
+    {
+        ApplyRequestedSize();
+        return;
+    }
     int deltaH = GetClientSize().GetHeight() - m_desc->GetSize().GetHeight();
     int deltaW = GetClientSize().GetWidth() - m_desc->GetSize().GetWidth();
     int height = m_desc->GetInternalRepresentation()->GetHeight() + m_desc->GetCharHeight() + deltaH;
     int width = m_desc->GetInternalRepresentation()->GetWidth() + deltaW;
     height = wxMin(wxMax(height, MinHeight), MaxHeight);
     width = wxMin(wxMax(width, MinWidth), MaxWidth);
+    SetClientSize(width, height);
+    Center();
+}
+
+void QSPMsgDlg::ApplyRequestedSize()
+{
+    /* Percentages are of the main window, since that is what the game lays
+       out against; the ceiling is the screen the main window is on, so a
+       careless "w=5000" still leaves the OK button reachable. */
+    wxWindow *parent = GetParent();
+    int displayIndex = wxDisplay::GetFromWindow(parent ? parent : this);
+    wxDisplay display(displayIndex == wxNOT_FOUND ? 0 : (unsigned int)displayIndex);
+    wxRect area(display.GetClientArea());
+    wxSize reference(parent ? parent->GetClientSize() : area.GetSize());
+    wxSize decorations(GetSize() - GetClientSize());
+    int maxWidth = wxMax(area.GetWidth() - decorations.GetWidth(), MinWidth);
+    int maxHeight = wxMax(area.GetHeight() - decorations.GetHeight(), MinHeight);
+    int deltaW = GetClientSize().GetWidth() - m_desc->GetSize().GetWidth();
+    int deltaH = GetClientSize().GetHeight() - m_desc->GetSize().GetHeight();
+
+    int width;
+    if (m_options.Width > 0)
+        width = m_options.IsWidthPercent ? reference.GetWidth() * m_options.Width / 100 : FromDIP(m_options.Width);
+    else
+        width = wxMin(wxMax(m_desc->GetInternalRepresentation()->GetWidth() + deltaW, MinWidth), MaxWidth);
+    width = wxMin(wxMax(width, MinWidth), maxWidth);
+
+    int height;
+    if (m_options.Height > 0)
+        height = m_options.IsHeightPercent ? reference.GetHeight() * m_options.Height / 100 : FromDIP(m_options.Height);
+    else
+    {
+        /* The text rewraps at the new width, so it has to be laid out there
+           before its height means anything */
+        SetClientSize(width, GetClientSize().GetHeight());
+        Layout();
+        height = m_desc->GetInternalRepresentation()->GetHeight() + m_desc->GetCharHeight() + deltaH;
+        /* Fitting the content, but a long text scrolls rather than filling
+           the screen top to bottom */
+        maxHeight = wxMax(maxHeight * 4 / 5, MinHeight);
+    }
+    height = wxMin(wxMax(height, MinHeight), maxHeight);
+
     SetClientSize(width, height);
     Center();
 }

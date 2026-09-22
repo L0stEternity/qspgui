@@ -158,4 +158,35 @@
                                     bool toAppend, wxString *code, wxString *error);
     };
 
+    /* Options a game can put in front of a MSG text to get a bigger window:
+
+           msg '<!--modal w=720 h=60% title="Journal" ok="Close"-->' + body
+
+       The directive is an HTML comment on purpose. Another player shows the
+       same text in its ordinary message box, with the comment invisible as
+       long as the game has USEHTML on, so a game written for this player still
+       works everywhere else - it just gets a smaller window.
+
+       Sizes are in DIPs, or a percentage of the main window when they end in
+       '%'. Zero means the dialog sizes itself to the content. Keys are case-
+       insensitive, values can be bare or quoted with ' or ", and unknown keys
+       are ignored so a newer game does not break an older build of this
+       player. */
+    struct QSPMsgOptions
+    {
+        wxString Title;
+        wxString OkLabel;
+        int Width = 0;
+        int Height = 0;
+        bool IsWidthPercent = false;
+        bool IsHeightPercent = false;
+
+        bool HasSize() const { return Width > 0 || Height > 0; }
+
+        /* Strips a leading directive off text and fills options from it.
+           Returns false and leaves text alone when there is no directive, or
+           when it is not closed. */
+        static bool Parse(wxString &text, QSPMsgOptions &options);
+    };
+
 #endif

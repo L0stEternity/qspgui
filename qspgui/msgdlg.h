@@ -22,6 +22,7 @@
     #include <wx/statline.h>
     #include "textbox.h"
     #include "pathprovider.h"
+    #include "comtools.h"
 
     enum
     {
@@ -56,16 +57,25 @@
            button when there is something worth pasting. Empty by default, and
            the button only appears once it is set. */
         void SetCopyText(const wxString& text);
+        /* What a game asked for with a <!--modal ...--> directive: a caption,
+           an OK label and a size that is no longer held to the small default
+           range. Set before ShowModal, since sizing happens on init. */
+        void SetOptions(const QSPMsgOptions& options);
     protected:
         // Events
         void OnInitDialog(wxInitDialogEvent& event);
         void OnLinkClicked(wxHtmlLinkEvent& event);
         void OnCopy(wxCommandEvent& event);
 
+        // Internal methods
+        void ApplyRequestedSize();
+
         // Fields
         QSPTextBox *m_desc;
         wxButton *m_btnCopy;
+        wxButton *m_btnOk;
         wxString m_copyText;
+        QSPMsgOptions m_options;
     };
 
 #endif

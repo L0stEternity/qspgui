@@ -331,6 +331,7 @@ if (QSPGUI_BUILD_TESTS)
 		tests/test_devjson.cpp
 		tests/test_docklayout.cpp
 		tests/test_fileio.cpp
+		tests/test_msgoptions.cpp
 		tests/test_paths.cpp
 		tests/test_qspcode.cpp
 		tests/test_saveslots.cpp
