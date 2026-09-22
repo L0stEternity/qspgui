@@ -32,6 +32,27 @@
     #define QSP_GAME_HOST  wxT("qsp.game")
     #define QSP_SHELL_DIR  wxT("qspgui_web")
 
+    /* <font size> the way the old wxHTML renderer read it. A browser maps
+       size="3" to its own 16px default no matter what the page's font is, so
+       every sized run came out the wrong size next to the text around it.
+       wxHTML took 3 as the player's font size and scaled the rest from it
+       (wxBuildFontSizes); a relative size steps from the enclosing text,
+       which em reproduces. Rule text for a shell's <style> block. */
+    #define QSP_LEGACY_FONT_SIZES \
+        wxT("font[size=\"1\"]{font-size:calc(var(--qsp-size)*0.75);}\n") \
+        wxT("font[size=\"2\"]{font-size:calc(var(--qsp-size)*0.83);}\n") \
+        wxT("font[size=\"3\"]{font-size:var(--qsp-size);}\n") \
+        wxT("font[size=\"4\"]{font-size:calc(var(--qsp-size)*1.2);}\n") \
+        wxT("font[size=\"5\"]{font-size:calc(var(--qsp-size)*1.44);}\n") \
+        wxT("font[size=\"6\"]{font-size:calc(var(--qsp-size)*1.73);}\n") \
+        wxT("font[size=\"7\"]{font-size:calc(var(--qsp-size)*2);}\n") \
+        wxT("font[size=\"-2\"]{font-size:0.75em;}\n") \
+        wxT("font[size=\"-1\"]{font-size:0.83em;}\n") \
+        wxT("font[size=\"+1\"]{font-size:1.2em;}\n") \
+        wxT("font[size=\"+2\"]{font-size:1.44em;}\n") \
+        wxT("font[size=\"+3\"]{font-size:1.73em;}\n") \
+        wxT("font[size=\"+4\"]{font-size:2em;}\n")
+
     /* Small conversions every web-backed pane needs. Free functions rather
        than a namespace only so they can be reached from the panes' own
        translation units without another header each. */

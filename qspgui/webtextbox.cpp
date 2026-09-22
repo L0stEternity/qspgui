@@ -66,7 +66,12 @@ QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
 wxString QSPWebTextBox::BuildShellDocument()
 {
     static const wxChar *shellDocument =
-        wxT("<!DOCTYPE html>\n")
+        /* The Transitional doctype with its URL puts the page in
+           almost-standards mode: standards in every respect except that an
+           image alone in a table cell sits flush instead of on a text line,
+           which is how the old renderer drew the picture grids games build. */
+        wxT("<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\" ")
+        wxT("\"http://www.w3.org/TR/html4/loose.dtd\">\n")
         wxT("<html><head><meta charset=\"utf-8\">\n")
         wxT("<base id=\"qsp-base\" href=\"\">\n")
         wxT("<style>\n")
@@ -86,7 +91,12 @@ wxString QSPWebTextBox::BuildShellDocument()
         wxT(".qsp-layer{position:absolute;left:0;top:0;right:0;bottom:0;")
         wxT("overflow-y:auto;overflow-x:hidden;padding:5px;box-sizing:border-box;}\n")
         wxT(".qsp-hidden{visibility:hidden;}\n")
-        wxT("img,video{max-width:100%;height:auto;}\n")
+        /* height:auto keeps a scaled-down picture in proportion, but a CSS
+           rule beats a presentational attribute, so applied to every image it
+           would throw away the height="30" that old games size pictures with. */
+        wxT("img,video{max-width:100%;}\n")
+        wxT("img:not([height]),video:not([height]){height:auto;}\n")
+        QSP_LEGACY_FONT_SIZES
         wxT("</style>\n")
         /* The game's stylesheets are inserted just above this element and its
            own inline CSS goes inside it, so both always win over the built-in

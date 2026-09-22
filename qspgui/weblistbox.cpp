@@ -68,7 +68,12 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("#qsp-list{display:block;padding:2px 0;}\n")
         wxT(".qsp-item{display:flex;align-items:center;gap:6px;")
         wxT("padding:3px 6px;cursor:pointer;}\n")
-        wxT(".qsp-item img{max-height:2.5em;max-width:25%;height:auto;flex:0 0 auto;}\n")
+        /* The row's own icon only: a picture inside the item's HTML keeps the
+           size the game gave it, as it would in the main description. */
+        wxT(".qsp-item>img{max-height:2.5em;max-width:25%;height:auto;flex:0 0 auto;}\n")
+        wxT(".qsp-text img,.qsp-text video{max-width:100%;}\n")
+        wxT(".qsp-text img:not([height]),.qsp-text video:not([height]){height:auto;}\n")
+        QSP_LEGACY_FONT_SIZES
         wxT(".qsp-num{flex:0 0 auto;opacity:0.65;}\n")
         wxT(".qsp-text{flex:1 1 auto;min-width:0;overflow-wrap:break-word;}\n")
         /* The selection colours are worked out by the host from the page's own
