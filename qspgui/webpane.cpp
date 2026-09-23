@@ -27,6 +27,14 @@
 
 #ifdef QSPGUI_HAVE_WEBVIEW2_SDK
     #include <WebView2.h>
+    /* Callback<> for the COM event handlers, from wherever wxWidgets itself
+       takes it on this compiler */
+    #ifdef __VISUALC__
+        #include <wrl/event.h>
+        using Microsoft::WRL::Callback;
+    #else
+        #include <wx/msw/wrl/event.h>
+    #endif
 #endif
 
 wxIMPLEMENT_CLASS(QSPWebPane, wxPanel);
@@ -139,6 +147,15 @@ wxString QSPWebUtil::HashOf(const wxString& str)
     return wxString::Format(wxT("%08x"), hash);
 }
 
+bool QSPWebUtil::SplitGen(const wxString& payload, long *gen, wxString *rest)
+{
+    int separator = payload.Find(wxT('|'));
+    if (separator <= 0) return false;
+    if (!payload.Left(separator).ToLong(gen)) return false;
+    *rest = payload.Mid(separator + 1);
+    return true;
+}
+
 wxString QSPWebUtil::ToFileUrl(const wxString& dirPath)
 {
     if (dirPath.IsEmpty()) return wxEmptyString;
@@ -226,38 +243,71 @@ wxString QSPWebPane::GetDiagnosticsScript()
 QSPWebPane::QSPWebPane(wxWindow *parent, wxWindowID id) :
     wxPanel(parent, id, wxDefaultPosition, wxDefaultSize, wxNO_BORDER)
 {
+    m_view = NULL;
     m_pathProvider = NULL;
     m_isShellRequested = false;
     m_isShellReady = false;
+    m_isWatchingProcess = false;
+    m_processFailedToken = 0;
+    m_messageDepth = 0;
+    m_isRecoveryPending = false;
+    m_recoveryWindowStart = 0;
+    m_recoveryCount = 0;
 
-    m_view = wxWebView::New();
-    /* Keep the browser's own pre-paint colour in sync with the app so neither
-       the first frame nor a resize flashes white. Must precede Create(). */
-    m_view->SetBackgroundColour(wxPanel::GetBackgroundColour());
-
-    /* Created on a blank page, not the shell: the script message handler has
-       to be registered before the document that uses it starts loading. */
-    m_view->Create(this, wxID_ANY, wxT("about:blank"), wxDefaultPosition, wxDefaultSize);
-    /* The context menu is what opens the devtools on the backends that have no
-       API for it, so the two travel together. */
-    m_view->EnableContextMenu(ms_isDevMode);
-    m_view->EnableAccessToDevTools(ms_isDevMode);
-    m_view->AddScriptMessageHandler(wxT("qspHost"));
-
-    wxBoxSizer *sizer = new wxBoxSizer(wxVERTICAL);
-    sizer->Add(m_view, 1, wxEXPAND);
-    SetSizer(sizer);
-
-    m_view->Bind(wxEVT_WEBVIEW_LOADED, &QSPWebPane::OnWebViewLoaded, this);
-    m_view->Bind(wxEVT_WEBVIEW_NAVIGATING, &QSPWebPane::OnWebViewNavigating, this);
-    m_view->Bind(wxEVT_WEBVIEW_ERROR, &QSPWebPane::OnWebViewError, this);
-    m_view->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &QSPWebPane::OnScriptMessage, this);
+    SetSizer(new wxBoxSizer(wxVERTICAL));
+    CreateView();
     Bind(wxEVT_SIZE, &QSPWebPane::OnSize, this);
 
     /* Nothing is navigated here. The subclass has not supplied its document
        yet - it does that from its own constructor body, which runs after this
        one - and the whole startup sequence hangs off about:blank finishing.
        Starting it before the shell is known races the subclass for it. */
+}
+
+/* The handler holds a pointer to this pane, and the view outlives this body:
+   children are destroyed by the base class, after it. */
+QSPWebPane::~QSPWebPane()
+{
+    UnwatchProcess();
+}
+
+void QSPWebPane::CreateView()
+{
+    /* NULL when no backend can be used at all - on Windows, when the WebView2
+       runtime is not installed, since the IE backend is not built. The app
+       checks for that before building any pane; this keeps a pane from
+       taking the player down if it is ever reached anyway. */
+    wxWebView *view = wxWebView::New();
+    if (!view)
+    {
+        wxLogError(wxT("QSPWebPane: no browser engine is available"));
+        return;
+    }
+    /* Keep the browser's own pre-paint colour in sync with the app so neither
+       the first frame nor a resize flashes white. Must precede Create(). */
+    view->SetBackgroundColour(wxPanel::GetBackgroundColour());
+
+    /* Created on a blank page, not the shell: the script message handler has
+       to be registered before the document that uses it starts loading. */
+    if (!view->Create(this, wxID_ANY, wxT("about:blank"), wxDefaultPosition, wxDefaultSize))
+    {
+        wxLogError(wxT("QSPWebPane: the browser engine could not be started"));
+        view->Destroy();
+        return;
+    }
+    m_view = view;
+    /* The context menu is what opens the devtools on the backends that have no
+       API for it, so the two travel together. */
+    m_view->EnableContextMenu(ms_isDevMode);
+    m_view->EnableAccessToDevTools(ms_isDevMode);
+    m_view->AddScriptMessageHandler(wxT("qspHost"));
+
+    GetSizer()->Add(m_view, 1, wxEXPAND);
+
+    m_view->Bind(wxEVT_WEBVIEW_LOADED, &QSPWebPane::OnWebViewLoaded, this);
+    m_view->Bind(wxEVT_WEBVIEW_NAVIGATING, &QSPWebPane::OnWebViewNavigating, this);
+    m_view->Bind(wxEVT_WEBVIEW_ERROR, &QSPWebPane::OnWebViewError, this);
+    m_view->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &QSPWebPane::OnScriptMessage, this);
 }
 
 /* The subclass is ready. Writing the document has to come first, because the
@@ -270,7 +320,7 @@ void QSPWebPane::InitShell(const wxString& fileName, const wxString& document)
 {
     m_shellFile = fileName;
     WriteShellFile(document);
-    m_view->LoadURL(wxT("about:blank"));
+    if (m_view) m_view->LoadURL(wxT("about:blank"));
 }
 
 void QSPWebPane::OnSize(wxSizeEvent& event)
@@ -339,6 +389,8 @@ static void DisableBrowserAccelerators(wxWebView *view)
    pull resources from a virtual host, which silently breaks every image. */
 bool QSPWebPane::SetupShellHost()
 {
+    /* The backend exists from here on, which is what the watch needs */
+    WatchProcess();
 #ifdef QSPGUI_HAVE_WEBVIEW2_SDK
     DisableBrowserAccelerators(m_view);
     ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(m_view->GetNativeBackend());
@@ -385,7 +437,7 @@ void QSPWebPane::SetPathProvider(PathProvider *provider)
 
 void QSPWebPane::SetupGameFolderAccess()
 {
-    if (!m_pathProvider) return;
+    if (!m_pathProvider || !m_view) return;
 
     wxString gameDir(m_pathProvider->GetGamePath());
     if (gameDir == m_gameDir) return; // already set up for this folder
@@ -522,8 +574,138 @@ void QSPWebPane::OnWebViewError(wxWebViewEvent& WXUNUSED(event))
     /* Swallowed on purpose: a missing game asset must not interrupt play. */
 }
 
+/* ------------------------------------------------------------------ */
+/* Recovery                                                            */
+/* ------------------------------------------------------------------ */
+
+void QSPWebPane::WatchProcess()
+{
+#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
+    if (m_isWatchingProcess || !m_view) return;
+    ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(m_view->GetNativeBackend());
+    if (!webView2) return;
+
+    EventRegistrationToken token;
+    HRESULT hr = webView2->add_ProcessFailed(
+        Callback<ICoreWebView2ProcessFailedEventHandler>(
+            [this](ICoreWebView2 *WXUNUSED(sender), ICoreWebView2ProcessFailedEventArgs *args) -> HRESULT
+            {
+                COREWEBVIEW2_PROCESS_FAILED_KIND kind;
+                if (!args || FAILED(args->get_ProcessFailedKind(&kind))) return S_OK;
+                /* The rest either recovers by itself - the GPU process - or is
+                   not ours to act on: a hung renderer is usually a game's own
+                   script in a loop, and reloading would only run it again.
+                   Deferred, because this is the view calling out. */
+                if (kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED)
+                    CallAfter(&QSPWebPane::RecoverView, false);
+                else if (kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED)
+                    CallAfter(&QSPWebPane::RecoverView, true);
+                return S_OK;
+            }).Get(),
+        &token);
+    if (SUCCEEDED(hr))
+    {
+        m_isWatchingProcess = true;
+        m_processFailedToken = token.value;
+    }
+#endif
+}
+
+void QSPWebPane::UnwatchProcess()
+{
+#ifdef QSPGUI_HAVE_WEBVIEW2_SDK
+    if (!m_isWatchingProcess) return;
+    m_isWatchingProcess = false;
+    if (!m_view) return;
+    ICoreWebView2 *webView2 = static_cast<ICoreWebView2 *>(m_view->GetNativeBackend());
+    if (!webView2) return;
+    EventRegistrationToken token;
+    token.value = m_processFailedToken;
+    /* Fails harmlessly once the browser process is gone */
+    webView2->remove_ProcessFailed(token);
+#endif
+}
+
+void QSPWebPane::RecoverView(bool isBrowserGone)
+{
+    if (!m_view) return;
+
+    /* The view is about to be destroyed, and its own callback may be below
+       us on the stack: wait until it has returned. Idle events arrive inside
+       nested loops too, so the depth is what decides, not the idle. */
+    if (isBrowserGone && m_messageDepth > 0)
+    {
+        if (!m_isRecoveryPending)
+        {
+            m_isRecoveryPending = true;
+            Bind(wxEVT_IDLE, &QSPWebPane::OnRecoveryIdle, this);
+        }
+        return;
+    }
+
+    wxLongLong now = wxGetLocalTimeMillis();
+    if (m_recoveryCount == 0 || now - m_recoveryWindowStart > 60000)
+    {
+        m_recoveryWindowStart = now;
+        m_recoveryCount = 0;
+    }
+    if (++m_recoveryCount > 3)
+    {
+        if (m_recoveryCount == 4)
+            wxLogError(wxT("QSPWebPane (%s): the browser keeps failing; giving up on this pane"), m_paneName);
+        return;
+    }
+    wxLogWarning(wxT("QSPWebPane (%s): the browser %s process ended; reloading the pane"),
+                 m_paneName, isBrowserGone ? wxT("main") : wxT("page"));
+
+    if (!isBrowserGone)
+    {
+        /* Everything sent meanwhile is dropped, and none of it is lost: the
+           subclass sends its whole state again once the document is up. */
+        m_isShellReady = false;
+        m_view->LoadURL(m_isShellRequested ? m_shellUrl : wxString(wxT("about:blank")));
+        return;
+    }
+
+    /* A new view goes through the whole startup again: about:blank, then the
+       shell host, then the shell, then the game folder mapping - which is why
+       the folder is forgotten here, so that it is registered with the new
+       backend rather than taken as already done. */
+    UnwatchProcess();
+    wxWebView *oldView = m_view;
+    m_view = NULL;
+    GetSizer()->Detach(oldView);
+    oldView->Destroy();
+    m_isShellRequested = false;
+    m_isShellReady = false;
+    m_gameDir.Clear();
+
+    CreateView();
+    if (!m_view) return;
+    Layout();
+    m_view->SetSize(GetClientSize());
+    m_view->LoadURL(wxT("about:blank"));
+}
+
+void QSPWebPane::OnRecoveryIdle(wxIdleEvent& event)
+{
+    event.Skip();
+    if (m_messageDepth > 0) return;
+    Unbind(wxEVT_IDLE, &QSPWebPane::OnRecoveryIdle, this);
+    m_isRecoveryPending = false;
+    RecoverView(true);
+}
+
 void QSPWebPane::OnScriptMessage(wxWebViewEvent& event)
 {
+    /* See m_messageDepth */
+    struct DepthScope
+    {
+        int& m_depth;
+        explicit DepthScope(int& depth) : m_depth(depth) { ++m_depth; }
+        ~DepthScope() { --m_depth; }
+    } depthScope(m_messageDepth);
+
     wxString message(event.GetString());
     if (message.IsEmpty()) return;
 

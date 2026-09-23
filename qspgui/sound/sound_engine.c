@@ -49,13 +49,31 @@ typedef struct
     double msecs;
 } ma_libtsf;
 
+/* The soundfont is parsed once, into master, the first time a MIDI file is
+   played, and every MIDI sound then gets a tsf_copy of it - which shares the
+   parsed samples instead of converting all of them again on every PLAY. The
+   raw file is dropped once it has been parsed. */
 typedef struct
 {
     void *buf;
     int size;
+    tsf *master;
+    /* Set once the file is read, before any sound can play, and never
+       touched again until the engine is gone - the only field read unlocked */
+    int isPresent;
 } tsf_soundfont;
 
+/* Music is read as it plays rather than all at once. A whole-file load runs
+   on the calling thread - the UI's - so a long track on a slow disk froze the
+   player for as long as the read took. Short sounds are still loaded whole:
+   for them streaming costs more than it saves. */
+#define SOUND_STREAM_MIN_BYTES (1024 * 1024)
+
 static tsf_soundfont ma_current_soundfont;
+/* tsf_copy and tsf_close share a plain reference count, and a streamed sound
+   is torn down on the resource manager's job thread */
+static ma_mutex ma_soundfont_lock;
+static int ma_soundfont_lock_ready = 0;
 static ma_engine ma_current_engine;
 static ma_resource_manager ma_current_resource_manager;
 
@@ -99,12 +117,58 @@ static int soundfont_load(FILE *file, tsf_soundfont *sf)
     len = fread(data, 1, len, file);
     sf->buf = data;
     sf->size = len;
+    sf->isPresent = 1;
     return 0;
 }
 
 static void soundfont_free(tsf_soundfont *sf)
 {
+    if (sf->master) tsf_close(sf->master);
     if (sf->buf) free(sf->buf);
+    sf->master = NULL;
+    sf->buf = NULL;
+    sf->isPresent = 0;
+}
+
+/* A new instance sharing the parsed soundfont, or NULL when there is none */
+static tsf *soundfont_acquire(void)
+{
+    tsf *sf;
+    if (!ma_soundfont_lock_ready) return NULL;
+    ma_mutex_lock(&ma_soundfont_lock);
+    if (ma_current_soundfont.master == NULL && ma_current_soundfont.buf != NULL)
+    {
+        ma_current_soundfont.master = tsf_load_memory(ma_current_soundfont.buf, ma_current_soundfont.size);
+        /* Parsed or not, it is never parsed again */
+        free(ma_current_soundfont.buf);
+        ma_current_soundfont.buf = NULL;
+    }
+    sf = ma_current_soundfont.master ? tsf_copy(ma_current_soundfont.master) : NULL;
+    ma_mutex_unlock(&ma_soundfont_lock);
+    return sf;
+}
+
+static void soundfont_release(tsf *sf)
+{
+    ma_mutex_lock(&ma_soundfont_lock);
+    tsf_close(sf);
+    ma_mutex_unlock(&ma_soundfont_lock);
+}
+
+static ma_uint32 sound_flags_for(FILE *file)
+{
+    long size;
+    ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
+    if (file == NULL) return flags;
+    if (fseek(file, 0, SEEK_END) == 0)
+    {
+        size = ftell(file);
+        /* ftell fails past 2 GB where long is 32 bits - that is a long file */
+        if (size < 0 || size >= SOUND_STREAM_MIN_BYTES)
+            flags |= MA_SOUND_FLAG_STREAM;
+    }
+    fclose(file);
+    return flags;
 }
 
 static ma_result ma_midi_ds_read(ma_data_source *pDataSource, void *pFramesOut, ma_uint64 frameCount, ma_uint64 *pFramesRead)
@@ -112,13 +176,19 @@ static ma_result ma_midi_ds_read(ma_data_source *pDataSource, void *pFramesOut, 
     ma_uint64 samplesRead = 0;
     ma_libtsf *tsf = (ma_libtsf *)pDataSource;
     unsigned char *outputStream = (unsigned char *)pFramesOut;
-    double msecs = tsf->msecs;
-    int channels = (tsf->sf->outputmode == TSF_MONO) ? 1 : 2;
-    float sampleRate = tsf->sf->outSampleRate;
-    tml_message *midiMessage = tsf->midi_message;
+    double msecs;
+    int channels;
+    float sampleRate;
+    tml_message *midiMessage;
 
+    /* Checked before anything reads through it */
     if (tsf->sf == NULL)
         return MA_ERROR;
+
+    msecs = tsf->msecs;
+    channels = (tsf->sf->outputmode == TSF_MONO) ? 1 : 2;
+    sampleRate = tsf->sf->outSampleRate;
+    midiMessage = tsf->midi_message;
 
     while (frameCount > 0 && midiMessage)
     {
@@ -252,21 +322,29 @@ static ma_result ma_decoding_backend_init_midi(void *pUserData, ma_read_proc onR
     tsf->midi_message = NULL;
     tsf->msecs = 0.0;
 
-    if (ma_current_soundfont.buf != NULL)
+    /* Anything that is not MIDI is turned away first, before the soundfont is
+       touched. A file opened by path - as every streamed sound is - is offered
+       to this backend before the built-in ones, and a WAV claimed here played
+       as silence that ended at once. Only the header is read to tell. */
+    tsf->midi_init_message = tml_load_by_callback(tsf);
+    tsf->midi_message = tsf->midi_init_message;
+    if (tsf->midi_init_message == NULL || !ma_current_soundfont.isPresent)
     {
-        tsf->sf = tsf_load_memory(ma_current_soundfont.buf, ma_current_soundfont.size);
-        if (tsf->sf == NULL)
-        {
-            ma_data_source_uninit(&tsf->ds);
-            ma_free(tsf, pAllocationCallbacks);
-            return MA_ERROR;
-        }
-
-        tsf_set_output(tsf->sf, TSF_STEREO_INTERLEAVED, ma_current_engine.sampleRate, 0.0f);
-
-        tsf->midi_init_message = tml_load_by_callback(tsf);
-        tsf->midi_message = tsf->midi_init_message;
+        if (tsf->midi_init_message != NULL) tml_free(tsf->midi_init_message);
+        ma_data_source_uninit(&tsf->ds);
+        ma_free(tsf, pAllocationCallbacks);
+        return (ma_current_soundfont.isPresent ? MA_INVALID_FILE : MA_ERROR);
     }
+
+    tsf->sf = soundfont_acquire();
+    if (tsf->sf == NULL)
+    {
+        tml_free(tsf->midi_init_message);
+        ma_data_source_uninit(&tsf->ds);
+        ma_free(tsf, pAllocationCallbacks);
+        return MA_ERROR;
+    }
+    tsf_set_output(tsf->sf, TSF_STEREO_INTERLEAVED, ma_current_engine.sampleRate, 0.0f);
 
     *ppBackend = tsf;
 
@@ -285,7 +363,7 @@ static void ma_decoding_backend_uninit_midi(void *pUserData, ma_data_source *pBa
     if (tsf->sf != NULL)
     {
         tsf_reset(tsf->sf);
-        tsf_close(tsf->sf);
+        soundfont_release(tsf->sf);
     }
 
     ma_data_source_uninit(&tsf->ds);
@@ -306,6 +384,9 @@ int sound_init_engine()
     MA_ZERO_MEMORY(&ma_current_engine, sizeof(ma_engine));
     MA_ZERO_MEMORY(&ma_current_resource_manager, sizeof(ma_resource_manager));
     MA_ZERO_MEMORY(&ma_current_soundfont, sizeof(tsf_soundfont));
+
+    if (!ma_soundfont_lock_ready && ma_mutex_init(&ma_soundfont_lock) == MA_SUCCESS)
+        ma_soundfont_lock_ready = 1;
 
     resourceManagerConfig = ma_resource_manager_config_init();
     resourceManagerConfig.decodedFormat = ma_format_f32;
@@ -335,7 +416,13 @@ void sound_free_engine()
 {
     ma_engine_uninit(&ma_current_engine);
     ma_resource_manager_uninit(&ma_current_resource_manager);
+    /* No sound is left to hold a copy by now */
     soundfont_free(&ma_current_soundfont);
+    if (ma_soundfont_lock_ready)
+    {
+        ma_mutex_uninit(&ma_soundfont_lock);
+        ma_soundfont_lock_ready = 0;
+    }
 }
 
 int soundfont_init(const char *filePath)
@@ -363,12 +450,17 @@ int soundfont_init_w(const wchar_t *filePath)
 ma_sound_file sound_play_file(const char *file)
 {
     ma_result result;
+    ma_uint32 flags;
+    FILE *probe = NULL;
     ma_sound_file sound = (ma_sound_file)malloc(sizeof(ma_sound));
     if (sound == NULL)
         return NULL;
 
+    if (ma_fopen(&probe, file, "rb") != MA_SUCCESS) probe = NULL;
+    flags = sound_flags_for(probe);
+
     MA_ZERO_MEMORY(sound, sizeof(ma_sound));
-    result = ma_sound_init_from_file(&ma_current_engine, file, MA_SOUND_FLAG_NO_SPATIALIZATION, 0, 0, sound);
+    result = ma_sound_init_from_file(&ma_current_engine, file, flags, 0, 0, sound);
     if (result != MA_SUCCESS)
     {
         free(sound);
@@ -388,12 +480,17 @@ ma_sound_file sound_play_file(const char *file)
 ma_sound_file sound_play_file_w(const wchar_t *file)
 {
     ma_result result;
+    ma_uint32 flags;
+    FILE *probe = NULL;
     ma_sound_file sound = (ma_sound_file)malloc(sizeof(ma_sound));
     if (sound == NULL)
         return NULL;
 
+    if (ma_wfopen(&probe, file, L"rb", NULL) != MA_SUCCESS) probe = NULL;
+    flags = sound_flags_for(probe);
+
     MA_ZERO_MEMORY(sound, sizeof(ma_sound));
-    result = ma_sound_init_from_file_w(&ma_current_engine, file, MA_SOUND_FLAG_NO_SPATIALIZATION, 0, 0, sound);
+    result = ma_sound_init_from_file_w(&ma_current_engine, file, flags, 0, 0, sound);
     if (result != MA_SUCCESS)
     {
         free(sound);

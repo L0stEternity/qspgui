@@ -437,3 +437,26 @@ msgstr "Ŝargado de la konservaĵo"
 msgid "Restoring the saved game"
 msgstr "Restarigo de la konservaĵo"
 
+msgid "Save the game on e&xit"
+msgstr "Konservi la ludon ĉe &eliro"
+
+msgid "&Resume it on the next launch"
+msgstr "&Daŭrigi ĝin ĉe la sekva starto"
+
+msgid "Resumed where you left off"
+msgstr "Daŭrigita de kie vi haltis"
+
+msgid "This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"
+msgstr "Ĉi tiu ludilo montras ludojn per Microsoft Edge WebView2 Runtime, kiu ne estas instalita en ĉi tiu komputilo.\n\nInstalu ĝin de Microsoft, poste relanĉu la ludilon. Ĉu malfermi la elŝutan paĝon nun?"
+
+msgid "WebView2 Runtime is missing"
+msgstr "Mankas WebView2 Runtime"
+
+msgid "The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."
+msgstr "La ludilo neatendite fermiĝis lastfoje. Raporto pri tio estis konservita en:\n%s\n\nSe tio ripetiĝas, bonvolu sendi la dosierojn el tiu dosierujo al la programistoj de la ludilo."
+
+msgid "The player crashed"
+msgstr "La ludilo kolapsis"
+
+msgid "Couldn't write the saved game"
+msgstr "Ne eblis skribi la konservitan ludon"

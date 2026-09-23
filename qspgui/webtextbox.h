@@ -128,6 +128,13 @@
         // Fields
         bool m_isUpdatePending;
         int m_updateDepth;
+        /* Moves whenever what the pane should show changes - when it goes
+           dirty, not when the update is sent, because the send is deferred and
+           a click can arrive in between. A link reported from content with an
+           older number is dropped: until the new content swaps in, the page is
+           still showing, and letting the reader click, the old one - on a slow
+           machine for long enough to double-click an EXEC: link twice. */
+        long m_contentGen;
         bool m_toUseHtml;
         bool m_toScroll;
         wxString m_text;

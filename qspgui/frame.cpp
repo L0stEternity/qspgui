@@ -24,6 +24,8 @@
 #include "devserver.h"
 
 #include <wx/utils.h>
+#include <chrono>
+#include <cstdlib>
 #include <thread>
 
 #include "icons/logo.xpm"
@@ -107,6 +109,7 @@ namespace
 BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_INIT(QSPFrame::OnInit)
     EVT_CLOSE(QSPFrame::OnClose)
+    EVT_IDLE(QSPFrame::OnIdle)
     EVT_TIMER(ID_TIMER, QSPFrame::OnTimer)
     EVT_MENU(wxID_EXIT, QSPFrame::OnQuit)
     EVT_MENU(ID_OPENGAME, QSPFrame::OnOpenGame)
@@ -127,6 +130,8 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MENU(ID_DARKTHEME, QSPFrame::OnSelectTheme)
     EVT_SYS_COLOUR_CHANGED(QSPFrame::OnSysColourChanged)
     EVT_MENU(ID_CHECKUPDATESONSTARTUP, QSPFrame::OnCheckUpdatesOnStartup)
+    EVT_MENU(ID_SAVEONEXIT, QSPFrame::OnSaveOnExit)
+    EVT_MENU(ID_RESUMEONLAUNCH, QSPFrame::OnResumeOnLaunch)
     EVT_MENU(ID_SELECTLANG, QSPFrame::OnSelectLang)
     EVT_MENU(ID_TOGGLEWINMODE, QSPFrame::OnToggleWinMode)
     EVT_MENU(ID_TOGGLEOBJS, QSPFrame::OnToggleObjs)
@@ -240,6 +245,9 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_settingsMenu->Append(ID_VOLUME, wxT("-"), volumeMenu);
     m_settingsMenu->AppendCheckItem(ID_CHECKUPDATESONSTARTUP, wxT("-"));
     m_settingsMenu->AppendSeparator();
+    m_settingsMenu->AppendCheckItem(ID_SAVEONEXIT, wxT("-"));
+    m_settingsMenu->AppendCheckItem(ID_RESUMEONLAUNCH, wxT("-"));
+    m_settingsMenu->AppendSeparator();
     wxMenuItem *settingsWinModeItem = new wxMenuItem(m_settingsMenu, ID_TOGGLEWINMODE, wxT("-"));
     settingsWinModeItem->SetBitmap(wxBitmap(windowmode_xpm));
     m_settingsMenu->Append(settingsWinModeItem);
@@ -299,11 +307,14 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_hasCustomCss = false;
     m_hasCustomJs = false;
     m_toQuit = false;
+    m_toSaveOnExit = false;
+    m_toResumeOnLaunch = false;
     m_keyPressedWhileDisabled = false;
     m_isGameOpened = false;
     m_isManagerUpdatePending = false;
     m_isRescalingDocks = false;
     m_isLoading = false;
+    m_isCloseDeferred = false;
     m_lastLayoutSize = wxSize(0, 0);
     m_colorTheme = QSP_THEME_SYSTEM;
 }
@@ -396,6 +407,12 @@ void QSPFrame::LoadSettings()
         wxT("dock_size(5,0,0)=22|dock_size(2,0,0)=215|dock_size(3,0,0)=204|dock_size(3,1,0)=41|"));
     cfg.Read(wxT("General/Panels"), &panels);
     cfg.Read(wxT("General/CheckUpdates"), &m_toCheckUpdates, true);
+    {
+        /* Always the player's own file, not a game's: see m_toSaveOnExit */
+        wxFileConfig playerCfg(wxEmptyString, wxEmptyString, m_configDefPath);
+        playerCfg.Read(wxT("Session/SaveOnExit"), &m_toSaveOnExit, false);
+        playerCfg.Read(wxT("Session/ResumeOnLaunch"), &m_toResumeOnLaunch, false);
+    }
     m_transHelper->Load(cfg, wxT("General/Language"));
     // -------------------------------------------------
     SetOverallVolume(m_volume);
@@ -411,6 +428,7 @@ void QSPFrame::LoadSettings()
     RefreshUI();
     m_settingsMenu->Check(ID_USEFONTSIZE, m_toUseFontSize);
     m_settingsMenu->Check(ID_CHECKUPDATESONSTARTUP, m_toCheckUpdates);
+    UpdateSessionMenu();
     SetColorTheme(m_colorTheme);
     ApplyThemeToDockArt();
     m_manager->LoadPerspective(panels);
@@ -911,6 +929,8 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_VOLUME80, _("80%\tAlt-5"));
     menuBar->SetLabel(ID_VOLUME100, _("Initial volume\tAlt-6"));
     menuBar->SetLabel(ID_CHECKUPDATESONSTARTUP, _("Check for updates on startup"));
+    menuBar->SetLabel(ID_SAVEONEXIT, _("Save the game on e&xit"));
+    menuBar->SetLabel(ID_RESUMEONLAUNCH, _("&Resume it on the next launch"));
     menuBar->SetLabel(ID_TOGGLEWINMODE, _("Window / Fullscreen &mode\tAlt-Enter"));
     menuBar->SetLabel(ID_SELECTLANG, _("Select &language...\tAlt-L"));
     menuBar->SetLabel(ID_CHECKUPDATES, _("Check for latest version"));
@@ -1208,7 +1228,7 @@ void QSPFrame::RunLoadingStep(const std::function<void()> &work,
     if (failure) std::rethrow_exception(failure);
 }
 
-void QSPFrame::OpenGameFile(const wxString& fullPath)
+void QSPFrame::OpenGameFile(const wxString& fullPath, bool toResume)
 {
     std::vector<char> world;
     bool isLoaded = false;
@@ -1263,8 +1283,14 @@ void QSPFrame::OpenGameFile(const wxString& fullPath)
         return;
     }
 
-    wxCommandEvent dummy;
-    OnNewGame(dummy);
+    /* The exit save goes straight into the new world. Starting the game first
+       would run its opening location - music, a MSG, a name prompt - only for
+       the save to replace all of it a moment later. */
+    if (!toResume || !ResumeFromExitSave())
+    {
+        wxCommandEvent dummy;
+        OnNewGame(dummy);
+    }
 
     if (m_toQuit) return;
     UpdateTitle();
@@ -1324,6 +1350,81 @@ wxString QSPFrame::GetQuickSavePath() const
     slotPath.SetName(slotPath.GetName() + wxT("_quick"));
     slotPath.SetExt(wxT("sav"));
     return slotPath.GetFullPath();
+}
+
+/* Beside the game like the quick save, and a file of its own so that leaving
+   never overwrites a save the player made. */
+wxString QSPFrame::GetExitSavePath(const wxString& gameFilePath)
+{
+    if (gameFilePath.IsEmpty()) return wxEmptyString;
+    wxFileName savePath(gameFilePath);
+    savePath.SetName(savePath.GetName() + wxT("_exit"));
+    savePath.SetExt(wxT("sav"));
+    return savePath.GetFullPath();
+}
+
+/* Only a game at rest is saved. Closing in the middle of game code - a MSG on
+   screen, a WAIT, a menu - would save half an action, and a save has no way to
+   carry the other half. Nor is it at rest once that code has finished after a
+   deferred close: it ran with every callback stood down, a WAIT cut short and
+   a MSG skipped. The previous exit save is left as it is instead, as it is
+   when the game has NOSAVE on. Dev sessions are throwaway and never save. */
+void QSPFrame::SaveOnExit()
+{
+    if (!m_toSaveOnExit || m_devServer || !m_isGameOpened) return;
+    /* The game to go back to is this one, even when it cannot be saved now */
+    {
+        wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configDefPath);
+        cfg.Write(wxT("Session/LastGame"), m_gameFilePath);
+    }
+    if (m_isCloseDeferred || m_isLoading || !m_toProcessEvents ||
+        QSPDev::IsEngineBusy() || !CanSaveGame())
+        return;
+
+    wxString savePath(GetExitSavePath(m_gameFilePath));
+    if (savePath.IsEmpty()) return;
+    /* A save runs the game's ONGSAVE. Every callback stands down once
+       m_toQuit is set, so a MSG or a sound in it is skipped rather than put in
+       front of someone who is leaving. */
+    m_toQuit = true;
+    std::vector<char> state;
+    if (QSPGameState::Save(state, false))
+        QSPFileIO::Write(savePath, state);
+}
+
+/* False sends the caller on to a fresh start: no exit save, or one this world
+   no longer accepts - the game was updated since, say. A save that cannot be
+   loaded says nothing the player can act on, so there is no error for it. */
+bool QSPFrame::ResumeFromExitSave()
+{
+    if (!m_toSaveOnExit || !m_toResumeOnLaunch || m_devServer) return false;
+    wxString savePath(GetExitSavePath(m_gameFilePath));
+    if (savePath.IsEmpty() || !wxFileExists(savePath)) return false;
+
+    std::vector<char> state;
+    if (!QSPFileIO::Read(savePath, state) || state.empty()) return false;
+    if (!QSPOpenSavedGameFromData(&state[0], (int)state.size(), QSP_TRUE))
+    {
+        /* An error in a location is the game's ONGLOAD failing after the state
+           was already in: the game is resumed, and the error is shown the way
+           any load shows it. Without a location it is the save that was
+           refused, and the game starts over instead. */
+        QSPErrorInfo errorInfo = QSPGetLastErrorData();
+        if (qspToWxString(errorInfo.LocName).IsEmpty()) return false;
+        ShowError();
+        return true;
+    }
+    ShowToast(_("Resumed where you left off"));
+    return true;
+}
+
+wxString QSPFrame::GetGameToResume() const
+{
+    if (!m_toSaveOnExit || !m_toResumeOnLaunch) return wxEmptyString;
+    wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configDefPath);
+    wxString gamePath(cfg.Read(wxT("Session/LastGame"), wxEmptyString));
+    if (gamePath.IsEmpty() || !wxFileExists(gamePath)) return wxEmptyString;
+    return gamePath;
 }
 
 void QSPFrame::QuickSaveToSlot()
@@ -1420,7 +1521,10 @@ void QSPFrame::LoadFromNumberedSlot(int slot)
    firing under a modal dialog would run the game the player is saving. */
 void QSPFrame::ShowSaveSlots()
 {
-    if (!m_isGameOpened) return;
+    /* Busy is checked here as well as in the save and the load, because F6
+       pressed in a pane reaches this during a WAIT - and a dialog whose
+       buttons then quietly do nothing is worse than no dialog */
+    if (!m_isGameOpened || !m_toProcessEvents) return;
 
     QSPSaveSlotsDlg dialog(this,
                            &m_saveSlots,
@@ -1514,16 +1618,57 @@ void QSPFrame::ProcessVersionResult(const wxString& versionInfo, int type)
 
 void QSPFrame::OnInit(wxInitEvent& event)
 {
-    OpenGameFile(event.GetInitString());
+    /* Whichever way the game arrived - the command line, auto.qsp or the
+       last session - it is picked up where it was left, if it was. */
+    OpenGameFile(event.GetInitString(), true);
 }
 
 void QSPFrame::OnClose(wxCloseEvent& WXUNUSED(event))
 {
+    /* Game code can be running underneath this - a WAIT or a forced refresh
+       yields to the event loop - and it comes back into the frame when it
+       resumes. Destroying the frame here freed it under that code: the yield
+       runs the idle pass that does the deleting, and the WAIT went on to use
+       the dead frame and crashed the player on the way out. So the window goes
+       at once and everything stands down, but the frame itself waits in
+       OnIdle until the engine has returned. */
+    if (QSPDev::IsEngineBusy() || m_isLoading)
+    {
+        if (!m_isCloseDeferred)
+        {
+            m_isCloseDeferred = true;
+            m_toast->Dismiss();
+            /* Written now rather than on the way out, which may never come */
+            SaveOnExit();
+            SaveSettings();
+            m_toQuit = true;
+            m_timer->Stop();
+            Hide();
+            /* A game looping on WAIT never returns: with every callback stood
+               down, its loop just spins, out of sight. It gets a few seconds
+               to finish what it was doing; after that the process ends, and
+               nothing is lost that is not already on disk. */
+            std::thread([]()
+            {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                std::_Exit(0);
+            }).detach();
+        }
+        return;
+    }
     m_toast->Dismiss();
+    SaveOnExit();
     SaveSettings();
     EnableControls(false, true);
     Destroy();
     m_toQuit = true;
+}
+
+void QSPFrame::OnIdle(wxIdleEvent& event)
+{
+    event.Skip();
+    if (m_isCloseDeferred && !IsBeingDeleted() && !QSPDev::IsEngineBusy() && !m_isLoading)
+        Close(true);
 }
 
 void QSPFrame::OnTimer(wxTimerEvent& WXUNUSED(event))
@@ -1588,16 +1733,18 @@ void QSPFrame::OnSaveGameStat(wxCommandEvent& WXUNUSED(event))
                         wxEmptyString, wxT("game.sav"),
                         _("Saved game files (*.sav)|*.sav"),
                         wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
-    if (dialog.ShowModal() == wxID_OK)
-        SaveGameState(dialog.GetPath());
+    /* The log is not something a reader sees, so a save that did not reach
+       the disk has to say so here - or they carry on believing it did */
+    if (dialog.ShowModal() == wxID_OK && !SaveGameState(dialog.GetPath()))
+        ShowToast(_("Couldn't write the saved game"), QSP_TOAST_ERROR);
 }
 
 void QSPFrame::OnQuickSave(wxCommandEvent& event)
 {
     if (m_savedGamePath.IsEmpty())
         OnSaveGameStat(event);
-    else
-        SaveGameState(m_savedGamePath);
+    else if (!SaveGameState(m_savedGamePath))
+        ShowToast(_("Couldn't write the saved game"), QSP_TOAST_ERROR);
 }
 
 void QSPFrame::OnQuickSaveSlot(wxCommandEvent& WXUNUSED(event))
@@ -1741,6 +1888,34 @@ void QSPFrame::OnSysColourChanged(wxSysColourChangedEvent& event)
 void QSPFrame::OnCheckUpdatesOnStartup(wxCommandEvent& WXUNUSED(event))
 {
     m_toCheckUpdates = !m_toCheckUpdates;
+}
+
+/* Written the moment they change, into the player's own file, rather than
+   with the rest in SaveSettings - which writes to the game's file whenever a
+   game has one. */
+void QSPFrame::OnSaveOnExit(wxCommandEvent& WXUNUSED(event))
+{
+    m_toSaveOnExit = !m_toSaveOnExit;
+    wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configDefPath);
+    cfg.Write(wxT("Session/SaveOnExit"), m_toSaveOnExit);
+    UpdateSessionMenu();
+}
+
+void QSPFrame::OnResumeOnLaunch(wxCommandEvent& WXUNUSED(event))
+{
+    m_toResumeOnLaunch = !m_toResumeOnLaunch;
+    wxFileConfig cfg(wxEmptyString, wxEmptyString, m_configDefPath);
+    cfg.Write(wxT("Session/ResumeOnLaunch"), m_toResumeOnLaunch);
+    UpdateSessionMenu();
+}
+
+/* Resuming needs something to resume from, so it is greyed out while saving
+   on exit is off. Its own choice is kept meanwhile and comes back with it. */
+void QSPFrame::UpdateSessionMenu()
+{
+    m_settingsMenu->Check(ID_SAVEONEXIT, m_toSaveOnExit);
+    m_settingsMenu->Check(ID_RESUMEONLAUNCH, m_toResumeOnLaunch);
+    m_settingsMenu->Enable(ID_RESUMEONLAUNCH, m_toSaveOnExit);
 }
 
 void QSPFrame::OnSelectLang(wxCommandEvent& WXUNUSED(event))
@@ -2058,8 +2233,15 @@ void QSPFrame::OnScriptCall(QSPScriptCallEvent& event)
 
 #endif
 
+/* The web lists queue their events rather than sending them, and a queued
+   event is dispatched by whatever pumps the loop next - a WAIT, a forced
+   refresh, a MSG, or the world load running on its worker thread. The engine
+   has no guard against being entered from inside itself, so these three need
+   the same one the links, the keys and the timer already have. What the pane
+   painted meanwhile is put right by the refresh that follows. */
 void QSPFrame::OnObjectChange(wxCommandEvent& event)
 {
+    if (!m_toProcessEvents || m_toQuit) return;
     // show selection first
     m_objects->Update();
     wxThread::Sleep(10);
@@ -2070,6 +2252,7 @@ void QSPFrame::OnObjectChange(wxCommandEvent& event)
 
 void QSPFrame::OnActionChange(wxCommandEvent& event)
 {
+    if (!m_toProcessEvents || m_toQuit) return;
     // show selection first
     m_actions->Update();
     wxThread::Sleep(10);
@@ -2080,6 +2263,7 @@ void QSPFrame::OnActionChange(wxCommandEvent& event)
 
 void QSPFrame::OnActionDblClick(wxCommandEvent& WXUNUSED(event))
 {
+    if (!m_toProcessEvents || m_toQuit) return;
     if (!QSPExecuteSelActionCode(QSP_TRUE))
         ShowError();
 }

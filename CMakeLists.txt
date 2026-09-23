@@ -183,6 +183,17 @@ if (WIN32)
 	else()
 		target_link_options(qspgui PRIVATE -Wl,--stack,4194304)
 	endif()
+	# A 32-bit player is otherwise held to 2 GB even on 64-bit Windows, and a
+	# large game world is briefly several copies of itself while it loads.
+	# Large-address-aware raises that to 4 GB there. Everything linked in is
+	# also built for 64-bit, so none of it keeps a pointer in an int.
+	if (CMAKE_SIZEOF_VOID_P EQUAL 4)
+		if (MSVC)
+			target_link_options(qspgui PRIVATE /LARGEADDRESSAWARE)
+		else()
+			target_link_options(qspgui PRIVATE -Wl,--large-address-aware)
+		endif()
+	endif()
 elseif (APPLE)
 	add_executable(qspgui MACOSX_BUNDLE ${QSPGUI_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/misc/macos/icon.icns")
 	set_target_properties(qspgui PROPERTIES

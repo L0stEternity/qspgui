@@ -71,6 +71,10 @@
            the cached previous one */
         static wxString HashOf(const wxString& str);
         static wxString ToFileUrl(const wxString& dirPath);
+        /* "<number>|<rest>", the shape of a click a page reports along with
+           the number of the content it was made on. rest may itself contain
+           '|'. False when there is no number in front. */
+        static bool SplitGen(const wxString& payload, long *gen, wxString *rest);
     };
 
     /* Something the game's own JS did wrong: a thrown error, a rejected
@@ -129,6 +133,7 @@
         DECLARE_CLASS(QSPWebPane)
     public:
         QSPWebPane(wxWindow *parent, wxWindowID id);
+        virtual ~QSPWebPane();
 
         void SetPathProvider(PathProvider *provider);
 
@@ -197,11 +202,38 @@
         wxString m_paneName;
 
     private:
+        /* The view and everything hung on it. Separate from the constructor
+           because a browser process that dies takes the view with it, and a
+           new one has to be built the same way. Leaves m_view NULL when the
+           browser engine cannot be started. */
+        void CreateView();
         bool SetupShellHost();
         void LoadShell();
         wxString GetShellDir() const;
         wxString GetShellPath() const;
         void WriteShellFile(const wxString& document);
+
+        /* A browser process that dies leaves the pane blank for good unless
+           something notices. A renderer is replaced by loading the document
+           again, and the subclass re-sends its state from OnShellReady as it
+           does after any load; the browser process takes the whole view, so
+           that is built anew. */
+        void WatchProcess();
+        void UnwatchProcess();
+        void RecoverView(bool isBrowserGone);
+        void OnRecoveryIdle(wxIdleEvent& event);
+        bool m_isWatchingProcess;
+        long long m_processFailedToken;
+        /* Nonzero while a message from the view is being handled. A link or a
+           key handled there can run game code or open a dialog, so the view's
+           own callback can still be on the stack when a recovery is due - and
+           destroying the view under it would crash on the way back out. */
+        int m_messageDepth;
+        bool m_isRecoveryPending;
+        /* A document that brings its renderer down every time it loads would
+           otherwise be reloaded for ever */
+        wxLongLong m_recoveryWindowStart;
+        int m_recoveryCount;
 
         static bool ms_isDevMode;
     };

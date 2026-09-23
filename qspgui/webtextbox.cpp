@@ -40,6 +40,7 @@ QSPWebTextBox::QSPWebTextBox(wxWindow *parent, wxWindowID id) :
 {
     m_isUpdatePending = false;
     m_updateDepth = 0;
+    m_contentGen = 0;
     m_toUseHtml = false;
     m_toScroll = false;
     m_font = *wxNORMAL_FONT;
@@ -112,7 +113,10 @@ wxString QSPWebTextBox::BuildShellDocument()
     static const wxChar *shellCore =
         wxT("var layers=[document.getElementById('qsp-l0'),document.getElementById('qsp-l1')];\n")
         wxT("var base=document.getElementById('qsp-base');\n")
-        wxT("var active=0,token=0,refreshHooks=[];\n")
+        /* shownGen is the number of the update on screen, sent back with
+           every link so the host can tell a click on content it has already
+           replaced - the old layer stays clickable until the swap */
+        wxT("var active=0,token=0,refreshHooks=[],shownGen=0;\n")
         /* The host channel can be a moment late on startup; an exception here
            would take the rest of the shell script down with it. */
         wxT("function qspPost(m){try{window.qspHost.postMessage(m);return true;}")
@@ -154,11 +158,11 @@ wxString QSPWebTextBox::BuildShellDocument()
            only then do the layers trade places - so the pane never shows a
            blank frame or a half-decoded image, it goes straight from one
            finished state to the next. */
-        wxT("window.qspUpdate=function(html,toBottom,style){\n")
+        wxT("window.qspUpdate=function(html,toBottom,style,gen){\n")
         wxT("  var mine=++token;\n")
         wxT("  var back=layers[1-active];\n")
         wxT("  back.innerHTML=html;\n")
-        wxT("  var media=back.querySelectorAll('img,video'),waits=[],i,m;\n")
+        wxT("  var media=back.querySelectorAll('img,video'),waits=[],done=false,i,m;\n")
         wxT("  for(i=0;i<media.length;i++){\n")
         wxT("    m=media[i];\n")
         wxT("    if(m.tagName==='IMG'){if(m.complete)continue;}\n")
@@ -170,8 +174,14 @@ wxString QSPWebTextBox::BuildShellDocument()
         wxT("    }.bind(m)));\n")
         wxT("  }\n")
         wxT("  var swap=function(){\n")
-        /* A newer update has already staged over this one; its swap wins. */
-        wxT("    if(mine!==token)return;\n")
+        /* A newer update has already staged over this one; its swap wins.
+           And this one swaps only once: when its media is slower than the
+           fallback below, the timer and the media both land here, and the
+           second call finds its own layer in front - hiding and clearing it
+           leaves the pane empty until the next update. */
+        wxT("    if(done||mine!==token)return;\n")
+        wxT("    done=true;\n")
+        wxT("    shownGen=gen;\n")
         wxT("    applyStyle(style);\n")
         wxT("    back.scrollTop=toBottom?back.scrollHeight:0;\n")
         wxT("    back.classList.remove('qsp-hidden');\n")
@@ -319,7 +329,7 @@ wxString QSPWebTextBox::BuildShellDocument()
         wxT("  if(!a)return;\n")
         wxT("  e.preventDefault();\n")
         wxT("  var raw=a.getAttribute('href');\n")
-        wxT("  if(raw!==null)qspPost('L'+raw);\n")
+        wxT("  if(raw!==null)qspPost('L'+shownGen+'|'+raw);\n")
         wxT("},true);\n")
         wxT("");
 
@@ -358,10 +368,11 @@ wxString QSPWebTextBox::BuildStyleObject() const
 wxString QSPWebTextBox::BuildUpdateScript() const
 {
     wxString text(QSPTools::HtmlizeWhitespaces(m_toUseHtml ? m_text : QSPTools::ProceedAsPlain(m_text)));
-    return wxString::Format(wxT("qspUpdate(%s,%s,%s);"),
+    return wxString::Format(wxT("qspUpdate(%s,%s,%s,%ld);"),
         ToJsString(text).wx_str(),
         m_toScroll ? wxT("true") : wxT("false"),
-        BuildStyleObject().wx_str());
+        BuildStyleObject().wx_str(),
+        m_contentGen);
 }
 
 wxString QSPWebTextBox::BuildUserStylesScript() const
@@ -411,6 +422,7 @@ void QSPWebTextBox::ResolveScriptCall(long callId, bool isOk, const wxString& va
    several times over. */
 void QSPWebTextBox::MarkDirty()
 {
+    ++m_contentGen;
     if (m_isUpdatePending) return;
     m_isUpdatePending = true;
     CallAfter(&QSPWebTextBox::Flush);
@@ -580,7 +592,10 @@ void QSPWebTextBox::OnPaneMessage(const wxString& message)
     }
     if (message[0] != wxT('L')) return;
 
-    wxString href(message.Mid(1));
+    long gen = 0;
+    wxString href;
+    if (!QSPWebUtil::SplitGen(message.Mid(1), &gen, &href)) return;
+    if (gen != m_contentGen) return;
 
     wxMouseEvent mouseEvent(wxEVT_LEFT_UP);
     wxHtmlLinkInfo info(href, wxEmptyString);

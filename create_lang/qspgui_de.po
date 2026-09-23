@@ -437,3 +437,26 @@ msgstr "Spielstand wird geladen"
 msgid "Restoring the saved game"
 msgstr "Spielstand wird wiederhergestellt"
 
+msgid "Save the game on e&xit"
+msgstr "Spiel beim &Beenden speichern"
+
+msgid "&Resume it on the next launch"
+msgstr "Beim nächsten Start fortse&tzen"
+
+msgid "Resumed where you left off"
+msgstr "Dort fortgesetzt, wo Sie aufgehört haben"
+
+msgid "This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"
+msgstr "Dieser Player zeigt Spiele mit der Microsoft Edge WebView2 Runtime an, die auf diesem Computer nicht installiert ist.\n\nInstallieren Sie sie von Microsoft und starten Sie den Player dann erneut. Die Download-Seite jetzt öffnen?"
+
+msgid "WebView2 Runtime is missing"
+msgstr "WebView2 Runtime fehlt"
+
+msgid "The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."
+msgstr "Der Player wurde beim letzten Mal unerwartet beendet. Ein Bericht darüber wurde gespeichert in:\n%s\n\nWenn das wieder passiert, senden Sie bitte die Dateien aus diesem Ordner an die Entwickler des Players."
+
+msgid "The player crashed"
+msgstr "Der Player ist abgestürzt"
+
+msgid "Couldn't write the saved game"
+msgstr "Der Spielstand konnte nicht geschrieben werden"

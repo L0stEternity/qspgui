@@ -437,3 +437,26 @@ msgstr "正在载入存档"
 msgid "Restoring the saved game"
 msgstr "正在恢复存档"
 
+msgid "Save the game on e&xit"
+msgstr "退出时&保存游戏"
+
+msgid "&Resume it on the next launch"
+msgstr "下次启动时&继续"
+
+msgid "Resumed where you left off"
+msgstr "已从上次离开的地方继续"
+
+msgid "This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"
+msgstr "本播放器使用 Microsoft Edge WebView2 Runtime 显示游戏，但此计算机上未安装它。\n\n请从 Microsoft 安装后重新启动播放器。现在打开下载页面吗？"
+
+msgid "WebView2 Runtime is missing"
+msgstr "缺少 WebView2 Runtime"
+
+msgid "The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."
+msgstr "播放器上次意外关闭。相关报告已保存在：\n%s\n\n如果此问题反复出现，请将该文件夹中的文件发送给播放器的开发者。"
+
+msgid "The player crashed"
+msgstr "播放器崩溃了"
+
+msgid "Couldn't write the saved game"
+msgstr "无法写入存档"

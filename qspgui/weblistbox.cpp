@@ -32,6 +32,7 @@ QSPWebListBox::QSPWebListBox(wxWindow *parent, wxWindowID id, ListBoxType type) 
     m_toUseHtml = false;
     m_toShowNums = false;
     m_selection = wxNOT_FOUND;
+    m_itemsGen = 0;
     m_font = *wxNORMAL_FONT;
     m_linkColor = *wxBLUE;
     m_backColor = wxPanel::GetBackgroundColour();
@@ -94,7 +95,9 @@ wxString QSPWebListBox::BuildShellDocument()
     static const wxChar *documentCore =
         wxT("var list=document.getElementById('qsp-list');\n")
         wxT("var base=document.getElementById('qsp-base');\n")
-        wxT("var sel=-1,extended=false;\n")
+        /* gen is the number of the list on screen, sent back with every click
+           so the host can tell a click on a list it has already replaced */
+        wxT("var sel=-1,extended=false,gen=0;\n")
         wxT("function qspPost(m){try{window.qspHost.postMessage(m);return true;}")
         wxT("catch(err){return false;}}\n")
         wxT("window.qspSetBase=function(href){base.href=href;};\n")
@@ -118,8 +121,9 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("};\n")
         /* items is [{img,text},...]; the host has already decided whether the
            text is the game's HTML or an escaped plain string. */
-        wxT("window.qspSetItems=function(items,showNums){\n")
+        wxT("window.qspSetItems=function(items,showNums,itemsGen){\n")
         wxT("  var frag=document.createDocumentFragment(),i,row,num,img,text;\n")
+        wxT("  gen=itemsGen;\n")
         wxT("  for(i=0;i<items.length;i++){\n")
         wxT("    row=document.createElement('div');\n")
         wxT("    row.className='qsp-item';\n")
@@ -189,8 +193,17 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("  if(index<0||index===sel)return;\n")
         wxT("  sel=index;\n")
         wxT("  paintSelection();\n")
-        wxT("  qspPost('S'+index);\n")
+        wxT("  qspPost('S'+gen+'|'+index);\n")
         wxT("},false);\n")
+        /* Running an action always says which row first. The host runs the
+           engine's selected action, and the row painted here is not always
+           that one - a hover the host had to drop while the game was busy
+           leaves them apart - so it is set again, which costs nothing when it
+           already agrees. */
+        wxT("function runAction(index){\n")
+        wxT("  qspPost('S'+gen+'|'+index);\n")
+        wxT("  qspPost('A'+gen+'|'+index);\n")
+        wxT("}\n")
         wxT("list.addEventListener('click',function(e){\n")
         /* A link inside an item is the game's own and keeps its meaning */
         wxT("  var anchor=e.target;\n")
@@ -199,18 +212,18 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("  if(anchor&&anchor.tagName==='A'){\n")
         wxT("    e.preventDefault();\n")
         wxT("    var raw=anchor.getAttribute('href');\n")
-        wxT("    if(raw!==null){qspPost('L'+raw);return;}\n")
+        wxT("    if(raw!==null){qspPost('L'+gen+'|'+raw);return;}\n")
         wxT("  }\n")
         wxT("  var index=rowIndex(e.target);\n")
         wxT("  if(index<0)return;\n")
-        wxT("  if(index!==sel){sel=index;paintSelection();qspPost('S'+index);}\n")
-        wxT("  if(extended)qspPost('A'+index);\n")
+        wxT("  if(extended){sel=index;paintSelection();runAction(index);return;}\n")
+        wxT("  if(index!==sel){sel=index;paintSelection();qspPost('S'+gen+'|'+index);}\n")
         wxT("},false);\n")
         /* Enter runs the selected action, the way it does in the classic list */
         wxT("document.addEventListener('keydown',function(e){\n")
         wxT("  if(e.keyCode!==13||!extended||sel<0)return;\n")
         wxT("  e.preventDefault();\n")
-        wxT("  qspPost('A'+sel);\n")
+        wxT("  runAction(sel);\n")
         wxT("},false);\n");
 
     wxString shell;
@@ -245,6 +258,17 @@ void QSPWebListBox::EndItems()
     m_images = m_newImages;
     m_descs = m_newDescs;
     if ((int)m_descs.GetCount() <= m_selection) m_selection = wxNOT_FOUND;
+    /* Only a new list moves the number. Re-rendering the same one - HTML mode,
+       the hotkey numbers, a new page - leaves every row where it was, so a
+       click made on it still means what it meant. The number moves even when
+       the script cannot be delivered yet: the page that will get the items is
+       a new one, and it will be sent them afresh. */
+    ++m_itemsGen;
+    SendItems();
+}
+
+void QSPWebListBox::SendItems()
+{
     RunScript(BuildItemsScript());
 }
 
@@ -262,7 +286,8 @@ wxString QSPWebListBox::BuildItemsScript() const
         script << wxT("{img:") << QSPWebUtil::ToJsString(m_images[i])
                << wxT(",text:") << QSPWebUtil::ToJsString(text) << wxT('}');
     }
-    script << wxT("],") << (m_toShowNums ? wxT("true") : wxT("false")) << wxT(");");
+    script << wxT("],") << (m_toShowNums ? wxT("true") : wxT("false"))
+           << wxT(',') << m_itemsGen << wxT(");");
     return script;
 }
 
@@ -327,7 +352,7 @@ void QSPWebListBox::OnShellReady()
 {
     RunScript(BuildStyleScript());
     RunScript(BuildUserStylesScript());
-    RunScript(BuildItemsScript());
+    SendItems();
     if (m_selection != wxNOT_FOUND)
         RunScript(wxString::Format(wxT("qspSelect(%d);"), m_selection));
 }
@@ -340,14 +365,14 @@ void QSPWebListBox::SetIsHtml(bool isHtml)
 {
     if (m_toUseHtml == isHtml) return;
     m_toUseHtml = isHtml;
-    RunScript(BuildItemsScript());
+    SendItems();
 }
 
 void QSPWebListBox::SetToShowNums(bool toShow)
 {
     if (m_toShowNums == toShow) return;
     m_toShowNums = toShow;
-    RunScript(BuildItemsScript());
+    SendItems();
 }
 
 void QSPWebListBox::SetTextFont(const wxFont& font)
@@ -398,44 +423,58 @@ bool QSPWebListBox::SetForegroundColour(const wxColour& colour)
 /* Input                                                               */
 /* ------------------------------------------------------------------ */
 
-void QSPWebListBox::SendListEvent(wxEventType type, int index)
+void QSPWebListBox::SendListEvent(wxEventType type, int index, long gen)
 {
-    /* Queued rather than sent: both handlers run game code, and the engine
+    /* Deferred rather than sent: both handlers run game code, and the engine
        must not be entered from inside the browser's own message callback.
-       Queued on the pane and left to propagate, so it reaches the frame
-       whatever sits between them. */
-    wxCommandEvent *event = new wxCommandEvent(type, GetId());
-    event->SetEventObject(this);
-    event->SetInt(index);
-    QueueEvent(event);
+
+       The list is checked when the event is dispatched, not when the message
+       arrived: an event queued ahead of this one can run game code that
+       replaces the list in between. */
+    CallAfter([this, type, index, gen]()
+    {
+        if (gen != m_itemsGen)
+        {
+            /* The page painted a row of a list that is gone; put back the
+               selection this side knows about */
+            RunScript(wxString::Format(wxT("qspSelect(%d);"), m_selection));
+            return;
+        }
+        /* Kept in step here as well as in the document, so the next
+           SetSelection from the engine does not think it is a no-op. */
+        m_selection = index;
+        /* Raised on the pane and left to propagate, so it reaches the frame
+           whatever sits between them */
+        wxCommandEvent event(type, GetId());
+        event.SetEventObject(this);
+        event.SetInt(index);
+        GetEventHandler()->ProcessEvent(event);
+    });
 }
 
 void QSPWebListBox::OnPaneMessage(const wxString& message)
 {
-    long index = 0;
+    long gen = 0, index = 0;
+    wxString rest;
+    if (!QSPWebUtil::SplitGen(message.Mid(1), &gen, &rest)) return;
 
-    if (message[0] == wxT('S'))
+    if (message[0] == wxT('S') || message[0] == wxT('A'))
     {
-        if (!message.Mid(1).ToLong(&index)) return;
-        /* Kept in step here as well as in the document, so the next
-           SetSelection from the engine does not think it is a no-op. */
-        m_selection = (int)index;
-        SendListEvent(wxEVT_COMMAND_LISTBOX_SELECTED, (int)index);
-        return;
-    }
-    if (message[0] == wxT('A'))
-    {
-        if (!message.Mid(1).ToLong(&index)) return;
-        m_selection = (int)index;
-        SendListEvent(wxEVT_COMMAND_LISTBOX_DOUBLECLICKED, (int)index);
+        if (!rest.ToLong(&index)) return;
+        SendListEvent(message[0] == wxT('S') ? wxEVT_COMMAND_LISTBOX_SELECTED
+                                             : wxEVT_COMMAND_LISTBOX_DOUBLECLICKED,
+                      (int)index, gen);
         return;
     }
     if (message[0] != wxT('L')) return;
+    /* Handled on the spot, so checked on the spot: a link in a list that has
+       been replaced is a link the reader can no longer see */
+    if (gen != m_itemsGen) return;
 
     /* A link the game put inside an item keeps the meaning it has everywhere
        else, so it is re-emitted as the event QSPFrame::OnLinkClicked takes. */
     wxMouseEvent mouseEvent(wxEVT_LEFT_UP);
-    wxHtmlLinkInfo info(message.Mid(1), wxEmptyString);
+    wxHtmlLinkInfo info(rest, wxEmptyString);
     info.SetEvent(&mouseEvent);
 
     wxHtmlLinkEvent linkEvent(GetId(), info);

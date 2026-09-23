@@ -18,7 +18,11 @@
 #include "comtools.h"
 
 #include <wx/file.h>
+#include <wx/filefn.h>
 #include <qsp_default.h>
+#ifdef __WINDOWS__
+    #include <io.h>
+#endif
 
 wxString QSPPaths::ComposeContained(const wxString &baseDir, const wxString &relativePath)
 {
@@ -111,10 +115,31 @@ bool QSPFileIO::Read(const wxString &path, std::vector<char> &data,
 
 bool QSPFileIO::Write(const wxString &path, const void *data, size_t size)
 {
-    wxFile file(path, wxFile::write);
-    if (!file.IsOpened()) return false;
-    if (size == 0) return true;
-    return file.Write(data, size) == size;
+    /* Written beside the target and swapped in only once it is complete.
+       Opening the target itself for writing empties it first, so a crash or a
+       full disk halfway through a save used to cost the old save as well. */
+    wxString tempPath(path + wxT(".tmp"));
+    {
+        wxFile file(tempPath, wxFile::write);
+        if (!file.IsOpened()) return false;
+        bool isWritten = (size == 0 || file.Write(data, size) == size);
+#ifdef __WINDOWS__
+        /* The swap below is journaled and the data is not, so without this a
+           power cut can leave the name pointing at blocks never written.
+           wxFile::Flush is no help: it only syncs where there is fsync. */
+        if (isWritten) isWritten = (_commit(file.fd()) == 0);
+#endif
+        if (!isWritten)
+        {
+            file.Close();
+            wxRemoveFile(tempPath);
+            return false;
+        }
+    }
+    /* ReplaceFile on Windows, so the old save is whole until the new one is */
+    if (wxRenameFile(tempPath, path, true)) return true;
+    wxRemoveFile(tempPath);
+    return false;
 }
 
 /* Every failed attempt serializes the whole state and runs the game's ONGSAVE

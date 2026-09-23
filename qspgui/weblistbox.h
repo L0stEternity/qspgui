@@ -76,6 +76,8 @@
     protected:
         static wxString BuildShellDocument();
         wxString BuildItemsScript() const;
+        /* The current items, stamped with m_itemsGen */
+        void SendItems();
         wxString BuildStyleScript() const;
         /* What the row under the mouse is painted with; see the definition */
         wxColour SelectionColor() const;
@@ -86,14 +88,21 @@
         virtual void OnPaneMessage(const wxString& message);
 
         /* Raised on the pane and left to propagate, the way the classic list
-           box's own events do */
-        void SendListEvent(wxEventType type, int index);
+           box's own events do. gen is the list the click was made on; one
+           that is no longer current is dropped. */
+        void SendListEvent(wxEventType type, int index, long gen);
 
         // Fields
         ListBoxType m_type;
         bool m_toUseHtml;
         bool m_toShowNums;
         int m_selection;
+        /* The number of the item list last sent. The page echoes the number of
+           the list it is showing with every click, and a click on a list that
+           has since been replaced is dropped: its index means a different row
+           now - on a slow machine, the second half of a double-click lands
+           there often enough. */
+        long m_itemsGen;
         wxFont m_font;
         wxColour m_linkColor;
         wxColour m_backColor;

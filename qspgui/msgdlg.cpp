@@ -186,7 +186,8 @@ void QSPMsgDlg::OnLinkClicked(wxHtmlLinkEvent& event)
     if (info.GetEvent()->LeftUp())
     {
         href = info.GetHref();
-        if (href[0] == wxT('#'))
+        /* Not href[0]: an empty href is a live assert in this build */
+        if (href.StartsWith(wxT("#")))
             m_desc->LoadPage(href);
         else
             QSPTools::LaunchDefaultBrowser(href);

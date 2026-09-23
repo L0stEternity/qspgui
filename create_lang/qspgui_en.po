@@ -437,3 +437,26 @@ msgstr "Loading the saved game"
 msgid "Restoring the saved game"
 msgstr "Restoring the saved game"
 
+msgid "Save the game on e&xit"
+msgstr "Save the game on e&xit"
+
+msgid "&Resume it on the next launch"
+msgstr "&Resume it on the next launch"
+
+msgid "Resumed where you left off"
+msgstr "Resumed where you left off"
+
+msgid "This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"
+msgstr "This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"
+
+msgid "WebView2 Runtime is missing"
+msgstr "WebView2 Runtime is missing"
+
+msgid "The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."
+msgstr "The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."
+
+msgid "The player crashed"
+msgstr "The player crashed"
+
+msgid "Couldn't write the saved game"
+msgstr "Couldn't write the saved game"

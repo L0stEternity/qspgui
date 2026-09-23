@@ -101,6 +101,8 @@
         ID_LIGHTTHEME,
         ID_DARKTHEME,
         ID_CHECKUPDATESONSTARTUP,
+        ID_SAVEONEXIT,
+        ID_RESUMEONLAUNCH,
         ID_CHECKUPDATES,
         ID_SELECTLANG,
         ID_TOGGLEWINMODE,
@@ -218,6 +220,9 @@
         bool IsBusyLoading() const { return m_isLoading; }
         bool ToShowHotkeys() const { return m_toShowHotkeys; }
         bool ToCheckUpdates() const { return m_toCheckUpdates; }
+        /* The game the last session ended in, when the player is set to go
+           back to it - empty otherwise, or when that file is gone. */
+        wxString GetGameToResume() const;
         bool ToQuit() const { return m_toQuit; }
         bool IsKeyPressedWhileDisabled() const { return m_keyPressedWhileDisabled; }
         void CheckLatestVersion(int type);
@@ -251,13 +256,19 @@
         void CallPaneFunc(wxWindowID id, QSP_BOOL toShow) const;
         void TogglePane(wxWindowID id);
         void SetOverallVolume(int percents);
-        void OpenGameFile(const wxString& fullPath);
+        /* toResume picks the game up from its exit save, when it has one,
+           instead of starting it */
+        void OpenGameFile(const wxString& fullPath, bool toResume = false);
         bool OpenGameState(const wxString& fullPath);
         /* toRemember keeps the file as the target of the Ctrl-S quicksave;
            the F5 slot is saved without it, so it can't silently take over
            the file the player picked themselves. */
         bool SaveGameState(const wxString& fullPath, bool toRemember = true);
         wxString GetQuickSavePath() const;
+        static wxString GetExitSavePath(const wxString& gameFilePath);
+        void SaveOnExit();
+        bool ResumeFromExitSave();
+        void UpdateSessionMenu();
         void QuickSaveToSlot();
         void QuickLoadFromSlot();
         /* Numbered slots, 1-based. Both report through a toast rather than a
@@ -274,6 +285,7 @@
         void OnVersionRequestState(wxWebRequestEvent& event);
         void OnInit(wxInitEvent& event);
         void OnClose(wxCloseEvent& event);
+        void OnIdle(wxIdleEvent& event);
         void OnTimer(wxTimerEvent& event);
         void OnMenu(wxCommandEvent& event);
         void OnQuit(wxCommandEvent& event);
@@ -293,6 +305,8 @@
         void OnSelectBackColor(wxCommandEvent& event);
         void OnSelectLinkColor(wxCommandEvent& event);
         void OnCheckUpdatesOnStartup(wxCommandEvent& event);
+        void OnSaveOnExit(wxCommandEvent& event);
+        void OnResumeOnLaunch(wxCommandEvent& event);
         void OnSelectLang(wxCommandEvent& event);
         void OnToggleWinMode(wxCommandEvent& event);
         void OnToggleObjs(wxCommandEvent& event);
@@ -354,6 +368,9 @@
         QSPToast *m_toast;
         QSPLoadingOverlay *m_loadingOverlay;
         bool m_isLoading;
+        /* The window was closed while game code was running under it; the
+           frame is destroyed once that code has returned. See OnClose. */
+        bool m_isCloseDeferred;
         QSPSaveSlots m_saveSlots;
         bool m_isManagerUpdatePending;
         QSPDockLayout m_dockLayout;
@@ -372,6 +389,11 @@
         bool m_keyPressedWhileDisabled;
         bool m_toShowHotkeys;
         bool m_toCheckUpdates;
+        /* Kept in the player's own settings file even while a game has its
+           own: they are needed at startup, before any game is open, and the
+           resume option means nothing without the exit save. */
+        bool m_toSaveOnExit;
+        bool m_toResumeOnLaunch;
         /* How the frame is painted - QSPColorTheme. Following the desktop is
            worked out on the spot, so a desktop that switches to dark while the
            player is running is followed as it happens. */

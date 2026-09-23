@@ -34,6 +34,7 @@
         // Overloaded methods
         virtual bool OnInit();
         virtual int OnExit();
+        virtual void OnFatalException();
         virtual void OnInitCmdLine(wxCmdLineParser &parser);
         virtual bool OnCmdLineParsed(wxCmdLineParser &parser);
     protected:
@@ -46,6 +47,16 @@
            Read from the settings file and applied before the first window
            exists, because that is the only time wxWidgets can choose. */
         void ApplyStoredAppearance();
+        /* False when there is no browser engine to show a game with, after
+           telling the player what to install. Always true in the classic
+           renderer. */
+        bool CheckBrowserEngine();
+        /* A crash writes a minidump into GetCrashDir(), and the next start
+           says so - otherwise a player that vanished on someone's machine
+           leaves nothing behind to find out why. Windows only. */
+        void SetupCrashReports();
+        void ReportLastCrash(wxWindow *parent);
+        static wxString GetCrashDir();
         void SetupLogging();
         void CloseLogging();
         bool GetAutoRunEvent(wxInitEvent& initEvent);

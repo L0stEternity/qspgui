@@ -19,23 +19,167 @@
 #include "comtools.h"
 #include "devserver.h"
 
+#include <wx/dir.h>
+
+#if defined(__WINDOWS__) && wxUSE_ON_FATAL_EXCEPTION && wxUSE_CRASHREPORT
+    #define QSP_HAS_CRASH_REPORTS
+    #include <wx/msw/crashrpt.h>
+    #include <wx/msw/seh.h>
+    #include <exception>
+    #include <cstdlib>
+#endif
+
+/* Newly written reports carry this until a start has told the player */
+#define QSP_CRASH_NEW_SUFFIX wxT(".new.dmp")
+#define QSP_CRASH_KEEP 10
+
 wxIMPLEMENT_APP(QSPApp);
+
+#ifdef QSP_HAS_CRASH_REPORTS
+namespace
+{
+    /* wxWidgets catches a crash on the main thread and in its own threads
+       only. The world loader runs on a std::thread and the audio on one of
+       miniaudio's, and a crash in either lands here. The handler writes the
+       report and says to end the process. */
+    LONG WINAPI QSPUnhandledExceptionFilter(EXCEPTION_POINTERS *info)
+    {
+        return (LONG)wxGlobalSEHandler(info);
+    }
+
+    /* A C++ exception nothing caught never reaches the filter: the runtime
+       ends the process by a route that skips it */
+    void QSPTerminateHandler()
+    {
+        wxCrashReport::GenerateNow(wxCRASH_REPORT_DEFAULT);
+        std::abort();
+    }
+}
+#endif
 
 bool QSPApp::OnInit()
 {
     if (!wxApp::OnInit())
         return false;
 
+    SetupCrashReports();
     SetupLogging();
 
     /* Before InitUI, and before anything else creates a window: the choice
        cannot be made once one exists. */
     ApplyStoredAppearance();
 
+    /* Before the engine is started: a false return from here skips OnExit,
+       so nothing that needs taking down may exist yet. */
+    if (!CheckBrowserEngine())
+    {
+        CloseLogging();
+        return false;
+    }
+
     wxInitAllImageHandlers();
     QSPInit();
     InitUI();
     return true;
+}
+
+/* Every pane is a browser view, and on Windows the browser is the WebView2
+   runtime - built into Windows 11, but missing from older and stripped-down
+   systems, which is where many readers are. Without it wxWebView::New() has
+   nothing to build and the panes would take the player down as it started.
+   Said once, here, in the player's own language, with the way out. */
+bool QSPApp::CheckBrowserEngine()
+{
+#ifdef QSPGUI_USE_WEBVIEW
+    if (wxWebView::IsBackendAvailable(wxWebViewBackendDefault)) return true;
+
+    wxLogError(wxT("No browser engine is available; the WebView2 runtime is probably not installed"));
+    /* The frame is what normally loads the language, and there is no frame */
+    QSPTranslationHelper transHelper(QSP_APPNAME, QSPTools::GetResourcePath(QSP_TRANSLATIONS));
+    {
+        wxFileConfig cfg(wxEmptyString, wxEmptyString, GetSettingsPath());
+        transHelper.Load(cfg, wxT("General/Language"));
+    }
+    int answer = wxMessageBox(
+        _("This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"),
+        _("WebView2 Runtime is missing"),
+        wxYES_NO | wxICON_ERROR);
+    if (answer == wxYES)
+        wxLaunchDefaultBrowser(wxT("https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
+    return false;
+#else
+    return true;
+#endif
+}
+
+wxString QSPApp::GetCrashDir()
+{
+    return wxFileName(QSPTools::GetConfigPath(wxT("qspgui_crashes"), wxT("report.dmp"))).GetPath();
+}
+
+void QSPApp::SetupCrashReports()
+{
+#ifdef QSP_HAS_CRASH_REPORTS
+    /* Under a debugger the crash is better left to it */
+    if (wxIsDebuggerRunning()) return;
+
+    /* Made now: by the time a report is written the process is already
+       failing, which is no time to be creating directories */
+    wxString dir(GetCrashDir());
+    if (!wxFileName::Mkdir(dir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL) && !wxDirExists(dir)) return;
+
+    wxHandleFatalExceptions(true);
+    /* Named by the start time and the process, like wxWidgets' own default,
+       so one run never overwrites another's */
+    wxFileName report(dir, wxString::Format(wxT("qspgui_%s_%lu"),
+                                            wxDateTime::Now().Format(wxT("%Y%m%dT%H%M%S")),
+                                            (unsigned long)wxGetProcessId()) + QSP_CRASH_NEW_SUFFIX);
+    wxCrashReport::SetFileName(report.GetFullPath());
+    ::SetUnhandledExceptionFilter(QSPUnhandledExceptionFilter);
+    std::set_terminate(QSPTerminateHandler);
+#endif
+}
+
+void QSPApp::OnFatalException()
+{
+#ifdef QSP_HAS_CRASH_REPORTS
+    wxCrashReport::Generate(wxCRASH_REPORT_DEFAULT);
+#endif
+}
+
+/* This run's own report has not been written, so any new one is from before */
+void QSPApp::ReportLastCrash(wxWindow *parent)
+{
+#ifdef QSP_HAS_CRASH_REPORTS
+    wxString dir(GetCrashDir());
+    if (!wxDirExists(dir)) return;
+
+    wxArrayString reports;
+    wxDir::GetAllFiles(dir, &reports, wxString(wxT("*")) + QSP_CRASH_NEW_SUFFIX, wxDIR_FILES);
+    bool hasNew = false;
+    size_t suffixLength = wxStrlen(QSP_CRASH_NEW_SUFFIX);
+    for (size_t i = 0; i < reports.GetCount(); ++i)
+    {
+        wxString seenName(reports[i].Left(reports[i].Length() - suffixLength) + wxT(".dmp"));
+        if (wxRenameFile(reports[i], seenName, true)) hasNew = true;
+    }
+
+    /* The newest few are enough to go on; the names sort by date */
+    wxArrayString all;
+    wxDir::GetAllFiles(dir, &all, wxT("*.dmp"), wxDIR_FILES);
+    all.Sort();
+    for (size_t i = 0; i + QSP_CRASH_KEEP < all.GetCount(); ++i)
+        wxRemoveFile(all[i]);
+
+    if (!hasNew) return;
+    wxLogError(wxT("The previous session crashed; its report is in %s"), dir);
+    /* An editor's session is no place for a dialog */
+    if (m_isDevMode) return;
+    wxMessageBox(wxString::Format(_("The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."), dir),
+                 _("The player crashed"), wxOK | wxICON_INFORMATION, parent);
+#else
+    wxUnusedVar(parent);
+#endif
 }
 
 int QSPApp::OnExit()
@@ -234,9 +378,24 @@ void QSPApp::InitUI()
     }
     frame->LoadSettings(); // load settings after initialization to properly restore everything
     frame->EnableControls(false);
+    /* After the settings, so it is said in the player's language */
+    ReportLastCrash(frame);
     // ----------------------
     wxInitEvent initEvent;
-    if (GetAutoRunEvent(initEvent))
+    /* A game named on the command line wins, and so does auto.qsp; only
+       without either does the player go back to the last one. An editor
+       starting a dev session gets exactly the game it asked for. */
+    bool toRun = GetAutoRunEvent(initEvent);
+    if (!toRun && !m_isDevMode)
+    {
+        wxString resumePath(frame->GetGameToResume());
+        if (!resumePath.IsEmpty())
+        {
+            initEvent.SetInitString(resumePath);
+            toRun = true;
+        }
+    }
+    if (toRun)
         wxPostEvent(frame, initEvent);
     else
     {

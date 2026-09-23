@@ -112,3 +112,44 @@ QSP_TEST(write_takes_a_vector_as_well_as_a_pointer)
 
     wxRemoveFile(path);
 }
+
+QSP_TEST(write_over_an_existing_file_replaces_it_whole)
+{
+    /* Saves go through a temporary file that is swapped in afterwards, so the
+       old contents must be gone - not merged, not left as a longer tail - and
+       the temporary must not be left lying beside the save. */
+    wxString path(TempPath(wxT("qspgui_io_replace.bin")));
+    const char longer[] = "a much longer previous save";
+    const char shorter[] = "new";
+    QSP_CHECK_BOOL(QSPFileIO::Write(path, longer, sizeof(longer) - 1), true);
+    QSP_CHECK_BOOL(QSPFileIO::Write(path, shorter, sizeof(shorter) - 1), true);
+
+    std::vector<char> back;
+    QSP_CHECK_BOOL(QSPFileIO::Read(path, back), true);
+    QSP_CHECK_INT((long)back.size(), (long)(sizeof(shorter) - 1));
+    QSP_CHECK_BOOL(back.size() == 3 && memcmp(&back[0], shorter, 3) == 0, true);
+    QSP_CHECK_BOOL(wxFileExists(path + wxT(".tmp")), false);
+
+    wxRemoveFile(path);
+}
+
+QSP_TEST(a_failed_write_leaves_the_previous_file_alone)
+{
+    /* The point of writing beside the target: when the new save cannot be
+       written, the old one is still there to load. A directory squatting on
+       the temporary name is a portable way to make that step fail. */
+    wxString path(TempPath(wxT("qspgui_io_keep.bin")));
+    const char previous[] = "previous";
+    QSP_CHECK_BOOL(QSPFileIO::Write(path, previous, sizeof(previous) - 1), true);
+    wxMkdir(path + wxT(".tmp"));
+
+    const char next[] = "next";
+    QSP_CHECK_BOOL(QSPFileIO::Write(path, next, sizeof(next) - 1), false);
+
+    std::vector<char> back;
+    QSP_CHECK_BOOL(QSPFileIO::Read(path, back), true);
+    QSP_CHECK_INT((long)back.size(), (long)(sizeof(previous) - 1));
+
+    wxRmdir(path + wxT(".tmp"));
+    wxRemoveFile(path);
+}

@@ -437,3 +437,26 @@ msgstr "Загрузка захавання"
 msgid "Restoring the saved game"
 msgstr "Аднаўленне захавання"
 
+msgid "Save the game on e&xit"
+msgstr "Захоўваць гульню пры &выхадзе"
+
+msgid "&Resume it on the next launch"
+msgstr "&Аднаўляць яе пры наступным запуску"
+
+msgid "Resumed where you left off"
+msgstr "Гульня працягнута з таго месца, дзе вы спыніліся"
+
+msgid "This player shows games with Microsoft Edge WebView2 Runtime, and it is not installed on this computer.\n\nInstall it from Microsoft, then start the player again. Open the download page now?"
+msgstr "Для паказу гульняў плэер выкарыстоўвае Microsoft Edge WebView2 Runtime, а на гэтым камп'ютары ён не ўсталяваны.\n\nУсталюйце яго з сайта Microsoft і запусціце плэер зноў. Адкрыць старонку загрузкі?"
+
+msgid "WebView2 Runtime is missing"
+msgstr "Не знойдзены WebView2 Runtime"
+
+msgid "The player closed unexpectedly last time. A report about it was saved in:\n%s\n\nIf this keeps happening, please send the files from that folder to the player's developers."
+msgstr "Мінулым разам плэер нечакана закрыўся. Справаздача пра гэта захавана ў тэчцы:\n%s\n\nКалі гэта паўтараецца, калі ласка, дашліце файлы з гэтай тэчкі распрацоўшчыкам плэера."
+
+msgid "The player crashed"
+msgstr "Плэер аварыйна завяршыўся"
+
+msgid "Couldn't write the saved game"
+msgstr "Не ўдалося запісаць захаванне"

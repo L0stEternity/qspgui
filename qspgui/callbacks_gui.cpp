@@ -327,27 +327,23 @@ int QSPCallbacks::Sleep(int msecs)
     bool canSaveGame = m_frame->GetGameMenu()->IsEnabled(ID_SAVEGAMESTAT);
     bool canQuicksave = m_frame->GetGameMenu()->IsEnabled(ID_QUICKSAVE);
     bool canQuicksaveSlot = m_frame->GetGameMenu()->IsEnabled(ID_QUICKSAVESLOT);
-    bool toBreak = false;
     m_frame->EnableControls(false, true);
-    int i, count = msecs / 50;
-    for (i = 0; i < count; ++i)
+    /* Paced against a clock rather than by counting 50 ms naps: every nap is
+       followed by a repaint and a yield, which take time of their own, and a
+       counted loop added all of it on top - WAIT 1000 ran twenty repaints long.
+       Runs at least once, so WAIT 0 still paints. */
+    wxStopWatch clock;
+    long remaining;
+    do
     {
-        wxThread::Sleep(50);
+        remaining = msecs - clock.Time();
+        wxThread::Sleep(wxMax(0L, wxMin(remaining, 50L)));
         m_frame->Update();
         wxTheApp->Yield(true);
         if (m_frame->ToQuit() ||
             m_frame->IsKeyPressedWhileDisabled())
-        {
-            toBreak = true;
             break;
-        }
-    }
-    if (!toBreak)
-    {
-        wxThread::Sleep(msecs % 50);
-        m_frame->Update();
-        wxTheApp->Yield(true);
-    }
+    } while (clock.Time() < msecs);
     m_frame->EnableControls(true, true);
     m_frame->GetGameMenu()->Enable(ID_SAVEGAMESTAT, canSaveGame);
     m_frame->GetGameMenu()->Enable(ID_QUICKSAVE, canQuicksave);
@@ -521,7 +517,10 @@ int QSPCallbacks::SaveGameStatus(QSPString file)
     std::vector<char> state;
     if (!QSPGameState::Save(state, false)) return 0;
 
-    QSPFileIO::Write(fullPath, state);
+    /* A game saving on its own - an autosave, a checkpoint - is the one the
+       reader relies on without looking, so a failure must not stay silent */
+    if (!QSPFileIO::Write(fullPath, state))
+        m_frame->ShowToast(_("Couldn't write the saved game"), QSP_TOAST_ERROR);
     return 0;
 }
 
