@@ -460,3 +460,6 @@ msgstr "播放器崩溃了"
 
 msgid "Couldn't write the saved game"
 msgstr "无法写入存档"
+
+msgid "Keep panel sizes in &pixels"
+msgstr "&保持面板的像素尺寸"

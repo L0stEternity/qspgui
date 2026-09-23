@@ -487,9 +487,16 @@ bool ParsePaneDock(const wxString &part, wxString *name, wxString *key)
 
 } // anonymous namespace
 
+void QSPDockLayout::SetKeepPixels(bool toKeepPixels)
+{
+    m_toKeepPixels = toKeepPixels;
+    Reset();
+}
+
 void QSPDockLayout::Reset()
 {
     m_fractions.clear();
+    m_pixels.clear();
     m_applied.clear();
 }
 
@@ -509,36 +516,92 @@ wxString QSPDockLayout::Rescale(const wxString &perspective, const wxSize &oldSi
             fixedDocks.Add(key);
     }
 
-    bool isChanged = false;
+    struct DockSize
+    {
+        size_t part;
+        wxString key;
+        int axis; /* 0 across the window, 1 down it */
+        int size;
+        int target;
+    };
+    std::vector<DockSize> docks;
+    int fixedSum[2] = { 0, 0 };
+    int targetSum[2] = { 0, 0 };
     for (size_t i = 0; i < parts.GetCount(); ++i)
     {
-        wxString key;
-        int direction, size;
-        if (!ParseDockSize(parts[i], &key, &direction, &size)) continue;
+        DockSize dock;
+        int direction;
+        if (!ParseDockSize(parts[i], &dock.key, &direction, &dock.size)) continue;
         /* 1 top, 2 right, 3 bottom, 4 left. 5 is the centre, which has no
            size of its own - it is whatever the others leave. */
         if (direction < 1 || direction > 4) continue;
-        if (fixedDocks.Index(key) != wxNOT_FOUND) continue;
 
-        bool isVertical = (direction == 1 || direction == 3);
-        int oldDim = (isVertical ? oldSize.GetHeight() : oldSize.GetWidth());
-        int newDim = (isVertical ? newSize.GetHeight() : newSize.GetWidth());
-
-        std::map<wxString, double>::const_iterator fraction = m_fractions.find(key);
-        std::map<wxString, int>::const_iterator applied = m_applied.find(key);
-        /* Anything but the size we last wrote means the sash was dragged, so
-           the share the user left it at is the one to keep from now on. */
-        double share = ((fraction == m_fractions.end() || applied == m_applied.end() || applied->second != size)
-            ? (double)size / oldDim
-            : fraction->second);
-
-        int scaled = (int)(share * newDim + 0.5);
-        if (scaled < 1) scaled = 1;
-        m_fractions[key] = share;
-        m_applied[key] = scaled;
-        if (scaled != size)
+        dock.part = i;
+        dock.axis = ((direction == 1 || direction == 3) ? 1 : 0);
+        if (fixedDocks.Index(dock.key) != wxNOT_FOUND)
         {
-            parts[i] = wxString::Format(wxT("dock_size(%s)=%d"), key, scaled);
+            fixedSum[dock.axis] += dock.size;
+            continue;
+        }
+        int oldDim = (dock.axis ? oldSize.GetHeight() : oldSize.GetWidth());
+        int newDim = (dock.axis ? newSize.GetHeight() : newSize.GetWidth());
+
+        /* Anything but the size we last wrote means the sash was dragged, so
+           the size the user left it at is the one to keep from now on. */
+        std::map<wxString, int>::const_iterator applied = m_applied.find(dock.key);
+        bool isMeasured = (applied == m_applied.end() || applied->second != dock.size);
+        if (m_toKeepPixels)
+        {
+            std::map<wxString, int>::const_iterator pixels = m_pixels.find(dock.key);
+            /* Except for a squeezed dock that came back larger, but no larger
+               than its own size: that is wxAUI holding it at its minimum. */
+            if (!isMeasured && pixels == m_pixels.end())
+                isMeasured = true;
+            else if (isMeasured && pixels != m_pixels.end() && applied != m_applied.end() &&
+                applied->second < pixels->second && dock.size > applied->second && dock.size <= pixels->second)
+                isMeasured = false;
+            if (isMeasured) m_pixels[dock.key] = dock.size;
+            dock.target = m_pixels[dock.key];
+        }
+        else
+        {
+            std::map<wxString, double>::const_iterator fraction = m_fractions.find(dock.key);
+            double share = ((isMeasured || fraction == m_fractions.end())
+                ? (double)dock.size / oldDim
+                : fraction->second);
+            m_fractions[dock.key] = share;
+            dock.target = (int)(share * newDim + 0.5);
+        }
+        if (dock.target < 1) dock.target = 1;
+        targetSum[dock.axis] += dock.target;
+        docks.push_back(dock);
+    }
+
+    if (m_toKeepPixels)
+    {
+        for (int axis = 0; axis < 2; ++axis)
+        {
+            int newDim = (axis ? newSize.GetHeight() : newSize.GetWidth());
+            int room = newDim - newDim / 4 - fixedSum[axis];
+            if (targetSum[axis] <= room) continue;
+
+            if (room < 0) room = 0;
+            for (size_t i = 0; i < docks.size(); ++i)
+            {
+                if (docks[i].axis != axis) continue;
+                docks[i].target = (int)((long long)docks[i].target * room / targetSum[axis]);
+                if (docks[i].target < 1) docks[i].target = 1;
+            }
+        }
+    }
+
+    bool isChanged = false;
+    for (size_t i = 0; i < docks.size(); ++i)
+    {
+        m_applied[docks[i].key] = docks[i].target;
+        if (docks[i].target != docks[i].size)
+        {
+            parts[docks[i].part] = wxString::Format(wxT("dock_size(%s)=%d"), docks[i].key, docks[i].target);
             isChanged = true;
         }
     }

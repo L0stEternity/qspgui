@@ -460,3 +460,6 @@ msgstr "La ludilo kolapsis"
 
 msgid "Couldn't write the saved game"
 msgstr "Ne eblis skribi la konservitan ludon"
+
+msgid "Keep panel sizes in &pixels"
+msgstr "Konservi grandecon de paneloj en &pikseloj"

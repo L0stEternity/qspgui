@@ -140,6 +140,8 @@ BEGIN_EVENT_TABLE(QSPFrame, wxFrame)
     EVT_MENU(ID_TOGGLEINPUT, QSPFrame::OnToggleInput)
     EVT_MENU(ID_TOGGLECAPTIONS, QSPFrame::OnToggleCaptions)
     EVT_MENU(ID_TOGGLEHOTKEYS, QSPFrame::OnToggleHotkeys)
+    EVT_MENU(ID_TOGGLEDOCKPIXELS, QSPFrame::OnToggleDockPixels)
+    EVT_UPDATE_UI_RANGE(ID_TOGGLEOBJS, ID_TOGGLEDOCKPIXELS, QSPFrame::OnUpdateShowHide)
     EVT_MENU(ID_VOLUME0, QSPFrame::OnVolume)
     EVT_MENU(ID_VOLUME20, QSPFrame::OnVolume)
     EVT_MENU(ID_VOLUME40, QSPFrame::OnVolume)
@@ -209,13 +211,15 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_gameMenu->Append(ID_SAVESLOTS, wxT("-"));
     // ------------
     wxMenu *wndsMenu = new wxMenu;
-    wndsMenu->Append(ID_TOGGLEOBJS, wxT("-"));
-    wndsMenu->Append(ID_TOGGLEACTS, wxT("-"));
-    wndsMenu->Append(ID_TOGGLEDESC, wxT("-"));
-    wndsMenu->Append(ID_TOGGLEINPUT, wxT("-"));
+    wndsMenu->AppendCheckItem(ID_TOGGLEOBJS, wxT("-"));
+    wndsMenu->AppendCheckItem(ID_TOGGLEACTS, wxT("-"));
+    wndsMenu->AppendCheckItem(ID_TOGGLEDESC, wxT("-"));
+    wndsMenu->AppendCheckItem(ID_TOGGLEINPUT, wxT("-"));
     wndsMenu->AppendSeparator();
-    wndsMenu->Append(ID_TOGGLECAPTIONS, wxT("-"));
-    wndsMenu->Append(ID_TOGGLEHOTKEYS, wxT("-"));
+    wndsMenu->AppendCheckItem(ID_TOGGLECAPTIONS, wxT("-"));
+    wndsMenu->AppendCheckItem(ID_TOGGLEHOTKEYS, wxT("-"));
+    wndsMenu->AppendSeparator();
+    wndsMenu->AppendCheckItem(ID_TOGGLEDOCKPIXELS, wxT("-"));
     // ------------
     wxMenu *fontMenu = new wxMenu;
     fontMenu->Append(ID_SELECTFONT, wxT("-"));
@@ -250,6 +254,9 @@ QSPFrame::QSPFrame(const wxString &configPath, QSPTranslationHelper *transHelper
     m_settingsMenu->AppendSeparator();
     wxMenuItem *settingsWinModeItem = new wxMenuItem(m_settingsMenu, ID_TOGGLEWINMODE, wxT("-"));
     settingsWinModeItem->SetBitmap(wxBitmap(windowmode_xpm));
+    /* F11 as well as the Alt-Enter the label shows: it is the key most
+       programs use for this, and the label only has room for one */
+    settingsWinModeItem->AddExtraAccel(wxAcceleratorEntry(wxACCEL_NORMAL, WXK_F11, ID_TOGGLEWINMODE));
     m_settingsMenu->Append(settingsWinModeItem);
     m_settingsMenu->AppendSeparator();
     m_settingsMenu->Append(ID_SELECTLANG, wxT("-"));
@@ -345,6 +352,7 @@ void QSPFrame::SaveSettings()
     cfg.Write(wxT("General/Volume"), m_volume);
     cfg.Write(wxT("General/ShowHotkeys"), m_toShowHotkeys);
     cfg.Write(wxT("General/Panels"), m_manager->SavePerspective());
+    cfg.Write(wxT("General/KeepPanelPixels"), m_dockLayout.IsKeepingPixels());
     cfg.Write(wxT("General/CheckUpdates"), m_toCheckUpdates);
     cfg.Write(wxT("Colors/Theme"), m_colorTheme);
     m_transHelper->Save(cfg, wxT("General/Language"));
@@ -406,6 +414,8 @@ void QSPFrame::LoadSettings()
         wxT("name=input;state=2099196;dir=3;layer=1;row=0;pos=0;prop=100000;bestw=832;besth=22;minw=50;minh=20;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|") \
         wxT("dock_size(5,0,0)=22|dock_size(2,0,0)=215|dock_size(3,0,0)=204|dock_size(3,1,0)=41|"));
     cfg.Read(wxT("General/Panels"), &panels);
+    bool toKeepPanelPixels;
+    cfg.Read(wxT("General/KeepPanelPixels"), &toKeepPanelPixels, false);
     cfg.Read(wxT("General/CheckUpdates"), &m_toCheckUpdates, true);
     {
         /* Always the player's own file, not a game's: see m_toSaveOnExit */
@@ -448,7 +458,7 @@ void QSPFrame::LoadSettings()
     /* The dock sizes just restored belong to the window size being restored
        with them, so that is the size every later resize is measured against.
        Whatever the window was sized at while it was being built is not. */
-    m_dockLayout.Reset();
+    m_dockLayout.SetKeepPixels(toKeepPanelPixels);
     m_lastLayoutSize = wxSize(0, 0);
     SetSize(x, y, w, h);
     if (m_lastLayoutSize.GetWidth() < 1) m_lastLayoutSize = GetClientSize();
@@ -910,6 +920,7 @@ void QSPFrame::ReCreateGUI()
     menuBar->SetLabel(ID_TOGGLEINPUT, _("&Input area\tCtrl-4"));
     menuBar->SetLabel(ID_TOGGLECAPTIONS, _("&Captions\tCtrl-5"));
     menuBar->SetLabel(ID_TOGGLEHOTKEYS, _("&Hotkeys for actions\tCtrl-6"));
+    menuBar->SetLabel(ID_TOGGLEDOCKPIXELS, _("Keep panel sizes in &pixels"));
     menuBar->SetLabel(ID_SHOWHIDE, _("&Show / Hide"));
     menuBar->SetLabel(ID_FONT, _("&Font"));
     menuBar->SetLabel(ID_SELECTFONT, _("Select &font...\tAlt-F"));
@@ -1979,6 +1990,30 @@ void QSPFrame::OnToggleHotkeys(wxCommandEvent& WXUNUSED(event))
     if (m_toProcessEvents) QSPCallbacks::RefreshInt(QSP_FALSE, QSP_FALSE);
 }
 
+/* Nothing moves when it is switched: the panels stay where they are, and the
+   next resize is the first one measured the new way. */
+void QSPFrame::OnToggleDockPixels(wxCommandEvent& WXUNUSED(event))
+{
+    m_dockLayout.SetKeepPixels(!m_dockLayout.IsKeepingPixels());
+}
+
+/* The marks are read off the layout each time the menu opens rather than kept
+   in step by hand: a pane is also hidden by its own close button, by the game's
+   SHOWOBJS and friends, and by a saved layout being loaded. */
+void QSPFrame::OnUpdateShowHide(wxUpdateUIEvent& event)
+{
+    switch (event.GetId())
+    {
+    case ID_TOGGLEOBJS: event.Check(m_manager->GetPane(m_objects).IsShown()); break;
+    case ID_TOGGLEACTS: event.Check(m_manager->GetPane(m_actions).IsShown()); break;
+    case ID_TOGGLEDESC: event.Check(m_manager->GetPane(m_vars).IsShown()); break;
+    case ID_TOGGLEINPUT: event.Check(m_manager->GetPane(m_input).IsShown()); break;
+    case ID_TOGGLECAPTIONS: event.Check(m_manager->GetPane(m_objects).HasCaption()); break;
+    case ID_TOGGLEHOTKEYS: event.Check(m_toShowHotkeys); break;
+    case ID_TOGGLEDOCKPIXELS: event.Check(m_dockLayout.IsKeepingPixels()); break;
+    }
+}
+
 void QSPFrame::OnCheckUpdates(wxCommandEvent& WXUNUSED(event))
 {
     CheckLatestVersion(UPDATE_SHOW_ALL_RESULTS);
@@ -2300,6 +2335,17 @@ void QSPFrame::OnKey(wxKeyEvent& event)
        them the reader last clicked in is not something a save key should turn
        on. */
     wxObject *source = event.GetEventObject();
+    /* The window mode keys, for the same reason. Only a pane's key: one
+       pressed anywhere else has already been through the accelerator, and
+       would switch the mode straight back. */
+    if ((source == m_desc || source == m_vars || source == m_objects ||
+         source == m_actions || source == m_imgView) &&
+        ((event.GetKeyCode() == WXK_F11 && !event.HasModifiers()) ||
+         (event.GetKeyCode() == WXK_RETURN && event.GetModifiers() == wxMOD_ALT)))
+    {
+        ShowFullScreen(!IsFullScreen());
+        return;
+    }
     if (!event.HasModifiers() &&
         (source == m_desc || source == m_vars || source == m_objects || source == m_actions))
     {
@@ -2380,7 +2426,10 @@ void QSPFrame::OnSize(wxSizeEvent& event)
    every pixel a resize adds: the same layout that fits a small window leaves
    a thin strip of actions and objects around a vast description on a large
    one. Each dock is given back the share of the window it had instead, so
-   what the player set up is what they keep at any size.
+   what the player set up is what they keep at any size. A player who wants
+   the panels to stay the size they made them can have that instead: the
+   dock layout keeps pixels then, and only steps in when the window gets too
+   small to hold them.
 
    The input row is left out of it - it holds one line of text, and a line of
    text does not get taller because the window did. */

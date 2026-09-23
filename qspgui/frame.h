@@ -112,6 +112,7 @@
         ID_TOGGLEINPUT,
         ID_TOGGLECAPTIONS,
         ID_TOGGLEHOTKEYS,
+        ID_TOGGLEDOCKPIXELS,
         ID_SHOWHIDE,
         ID_MAINDESC,
         ID_VARSDESC,
@@ -315,6 +316,8 @@
         void OnToggleInput(wxCommandEvent& event);
         void OnToggleCaptions(wxCommandEvent& event);
         void OnToggleHotkeys(wxCommandEvent& event);
+        void OnToggleDockPixels(wxCommandEvent& event);
+        void OnUpdateShowHide(wxUpdateUIEvent& event);
         void OnVolume(wxCommandEvent& event);
         void OnCheckUpdates(wxCommandEvent& event);
         void OnAbout(wxCommandEvent& event);
@@ -338,7 +341,8 @@
         void OnPaneClose(wxAuiManagerEvent& event);
         void OnSize(wxSizeEvent& event);
         void OnDropFiles(wxDropFilesEvent& event);
-        /* Give every dock the share of the window it had before the resize */
+        /* Give every dock the share of the window it had before the resize,
+           or its own size in pixels - see QSPDockLayout */
         void RescaleDocks();
 
         // Fields

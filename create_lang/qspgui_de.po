@@ -460,3 +460,6 @@ msgstr "Der Player ist abgestürzt"
 
 msgid "Couldn't write the saved game"
 msgstr "Der Spielstand konnte nicht geschrieben werden"
+
+msgid "Keep panel sizes in &pixels"
+msgstr "Panelgrößen in &Pixeln beibehalten"

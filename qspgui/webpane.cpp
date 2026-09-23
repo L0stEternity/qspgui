@@ -169,21 +169,31 @@ wxString QSPWebUtil::ToFileUrl(const wxString& dirPath)
 /* ------------------------------------------------------------------ */
 
 /* Keys pressed inside a browser control never reach wxWidgets, which would
-   otherwise silently disable the 1-9 action hotkeys, Space, and
-   Escape-to-exit-fullscreen. */
+   otherwise silently disable the 1-9 action hotkeys, Space, the window mode
+   keys and Escape-to-exit-fullscreen. */
 wxString QSPWebPane::GetInputScript()
 {
     wxString script =
+        wxT("function qspKeyMods(e){return (e.ctrlKey?1:0)|(e.shiftKey?2:0)|(e.altKey?4:0);}\n")
+        /* F11 and Alt-Enter switch the window mode. They are sent on the way
+           down, the way the menu accelerator fires, so letting go of Alt before
+           Enter cannot lose the chord - and so they are not sent again on the
+           way up. */
+        wxT("function qspIsWinModeKey(e){return e.keyCode===122||(e.keyCode===13&&e.altKey);}\n")
         /* Without the Edge SDK the browser still owns F5, so the page swallows
            it here - the frame gets it back below as a quick save. */
         wxT("document.addEventListener('keydown',function(e){\n")
         wxT("  if(e.keyCode===116)e.preventDefault();\n")
+        wxT("  if(qspIsWinModeKey(e)){\n")
+        wxT("    e.preventDefault();\n")
+        wxT("    if(!e.repeat)qspPost('K'+e.keyCode+'|'+qspKeyMods(e));\n")
+        wxT("  }\n")
         wxT("},false);\n")
         wxT("document.addEventListener('keyup',function(e){\n")
+        wxT("  if(qspIsWinModeKey(e))return;\n")
         wxT("  var code=e.keyCode;\n")
         wxT("  if(code>=96&&code<=105)code-=48;\n") /* numpad digits -> plain digits */
-        wxT("  var mods=(e.ctrlKey?1:0)|(e.shiftKey?2:0)|(e.altKey?4:0);\n")
-        wxT("  qspPost('K'+code+'|'+mods);\n")
+        wxT("  qspPost('K'+code+'|'+qspKeyMods(e));\n")
         wxT("},false);\n");
 
     /* A right-click menu offering "Reload" and "View source" in the middle of

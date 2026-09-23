@@ -219,9 +219,11 @@ wxString QSPWebListBox::BuildShellDocument()
         wxT("  if(extended){sel=index;paintSelection();runAction(index);return;}\n")
         wxT("  if(index!==sel){sel=index;paintSelection();qspPost('S'+gen+'|'+index);}\n")
         wxT("},false);\n")
-        /* Enter runs the selected action, the way it does in the classic list */
+        /* Enter runs the selected action, the way it does in the classic list.
+           Not Alt-Enter: that is the window mode key, and the classic list
+           never sees it either - the accelerator takes it first. */
         wxT("document.addEventListener('keydown',function(e){\n")
-        wxT("  if(e.keyCode!==13||!extended||sel<0)return;\n")
+        wxT("  if(e.keyCode!==13||e.altKey||!extended||sel<0)return;\n")
         wxT("  e.preventDefault();\n")
         wxT("  runAction(sel);\n")
         wxT("},false);\n");

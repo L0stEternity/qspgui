@@ -110,10 +110,22 @@
        the pixels every time: rounding to whole pixels on every step of a slow
        drag would otherwise walk the layout away from where it started. A dock
        whose size changed behind our back - the user dragged its sash - is
-       measured again instead. */
+       measured again instead.
+
+       With pixel sizes kept, each dock holds the width or height it was given
+       instead, and the centre pane takes whatever a resize adds or removes.
+       wxAUI never shrinks an existing dock to fit, so on a window too small
+       for them the docks are squeezed just enough to leave the centre a
+       quarter of it - and get their own sizes back once there is room. */
     class QSPDockLayout
     {
     public:
+        QSPDockLayout() : m_toKeepPixels(false) {}
+
+        /* Switching drops the measurements: the sizes on screen now are what
+           the new mode starts from. */
+        void SetKeepPixels(bool toKeepPixels);
+        bool IsKeepingPixels() const { return m_toKeepPixels; }
         /* perspective is what wxAuiManager::SavePerspective() returned while
            the window's client area was oldSize; the result is the same string
            with the dock sizes scaled for newSize. Panes named in fixedPanes
@@ -128,7 +140,9 @@
         void Reset();
 
     private:
+        bool m_toKeepPixels;
         std::map<wxString, double> m_fractions; /* dock key -> share of the window */
+        std::map<wxString, int> m_pixels;       /* dock key -> size it is meant to have */
         std::map<wxString, int> m_applied;      /* dock key -> size we last wrote */
     };
 

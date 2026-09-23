@@ -460,3 +460,6 @@ msgstr "Плеєр аварійно завершився"
 
 msgid "Couldn't write the saved game"
 msgstr "Не вдалося записати збереження"
+
+msgid "Keep panel sizes in &pixels"
+msgstr "Зберігати розміри панелей у пі&кселях"

@@ -143,3 +143,95 @@ QSP_TEST(DockLayoutKeepsEverythingElseInTheString)
     QSP_CHECK(grown.StartsWith(wxT("layout3|")));
     QSP_CHECK(grown.EndsWith(wxT("|")));
 }
+
+QSP_TEST(DockLayoutKeepsPixelsWhenAskedTo)
+{
+    QSPDockLayout layout;
+    layout.SetKeepPixels(true);
+    wxString perspective(Perspective(200, 150, 24));
+
+    /* The centre pane takes everything the resize adds, and gives it back */
+    QSP_CHECK_STR(layout.Rescale(perspective, wxSize(800, 600), wxSize(1600, 1200), FixedPanes()),
+                  perspective);
+    QSP_CHECK_STR(layout.Rescale(perspective, wxSize(1600, 1200), wxSize(800, 600), FixedPanes()),
+                  perspective);
+}
+
+QSP_TEST(DockLayoutSqueezesPixelsOnlyWhileTheyDoNotFit)
+{
+    QSPDockLayout layout;
+    layout.SetKeepPixels(true);
+    wxSize largeWindow(1600, 1200), smallWindow(600, 400);
+
+    /* Three quarters of 600 across; three quarters of 400 down, less the
+       input row, which keeps its own line */
+    wxString shrunk(layout.Rescale(Perspective(600, 400, 24), largeWindow, smallWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(shrunk, wxT("2,0,0")), 450);
+    QSP_CHECK_INT(DockSize(shrunk, wxT("3,0,0")), 276);
+    QSP_CHECK_INT(DockSize(shrunk, wxT("3,1,0")), 24);
+
+    /* With room again, the sizes the player chose come back exactly */
+    wxString grown(layout.Rescale(shrunk, smallWindow, largeWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(grown, wxT("2,0,0")), 600);
+    QSP_CHECK_INT(DockSize(grown, wxT("3,0,0")), 400);
+}
+
+QSP_TEST(DockLayoutSharesTheSqueezeAlongAnAxis)
+{
+    QSPDockLayout layout;
+    layout.SetKeepPixels(true);
+    wxString perspective(
+        wxT("layout3|")
+        wxT("name=desc;state=768;dir=5;layer=0;row=0;pos=0;prop=100000|")
+        wxT("name=objs;state=6293500;dir=2;layer=0;row=0;pos=0;prop=100000|")
+        wxT("name=vars;state=6293500;dir=4;layer=0;row=0;pos=0;prop=100000|")
+        wxT("dock_size(2,0,0)=600|dock_size(4,0,0)=300|"));
+
+    /* 900 wanted, 600 to give: each dock keeps two thirds of its own size */
+    wxString shrunk(layout.Rescale(perspective, wxSize(1600, 1200), wxSize(800, 600), FixedPanes()));
+    QSP_CHECK_INT(DockSize(shrunk, wxT("2,0,0")), 400);
+    QSP_CHECK_INT(DockSize(shrunk, wxT("4,0,0")), 200);
+}
+
+QSP_TEST(DockLayoutKeepsPixelsThroughTheMinimumSize)
+{
+    QSPDockLayout layout;
+    layout.SetKeepPixels(true);
+    wxSize largeWindow(1600, 1200), tinyWindow(100, 600);
+
+    wxString shrunk(layout.Rescale(Perspective(300, 150, 24), largeWindow, tinyWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(shrunk, wxT("2,0,0")), 75);
+
+    /* wxAUI would not go below the pane's minimum and wrote back its own
+       size. That is not the player dragging the sash to 80 pixels. */
+    shrunk.Replace(wxT("dock_size(2,0,0)=75"), wxT("dock_size(2,0,0)=80"));
+    wxString grown(layout.Rescale(shrunk, tinyWindow, largeWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(grown, wxT("2,0,0")), 300);
+}
+
+QSP_TEST(DockLayoutFollowsASashDraggedInPixels)
+{
+    QSPDockLayout layout;
+    layout.SetKeepPixels(true);
+    wxSize smallWindow(800, 600), largeWindow(1600, 1200);
+
+    layout.Rescale(Perspective(200, 150, 24), smallWindow, largeWindow, FixedPanes());
+    /* Dragged to 500 on the large window: 500 it stays on the small one */
+    wxString shrunk(layout.Rescale(Perspective(500, 150, 24), largeWindow, smallWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(shrunk, wxT("2,0,0")), 500);
+}
+
+QSP_TEST(DockLayoutStartsOverWhenTheModeChanges)
+{
+    QSPDockLayout layout;
+    layout.SetKeepPixels(true);
+    wxSize largeWindow(1600, 1200), smallWindow(600, 400);
+    wxString shrunk(layout.Rescale(Perspective(600, 150, 24), largeWindow, smallWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(shrunk, wxT("2,0,0")), 450);
+
+    /* Back to shares: the squeezed dock is three quarters of the window it
+       is on now, and keeps that share rather than its old pixel size */
+    layout.SetKeepPixels(false);
+    wxString grown(layout.Rescale(shrunk, smallWindow, largeWindow, FixedPanes()));
+    QSP_CHECK_INT(DockSize(grown, wxT("2,0,0")), 1200);
+}
