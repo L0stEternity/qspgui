@@ -105,6 +105,8 @@
         bool CmdLocationCode(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdExec(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdEval(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdEvalMany(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
+        bool CmdSeed(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdGetVar(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdSetVar(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
         bool CmdGoto(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText);
@@ -125,6 +127,7 @@
         /* Helpers */
         bool TakeSnapshot(std::vector<char> &snapshot, wxString &errorText);
         bool RunCode(const wxString &code, bool toRefresh, wxString &errorText);
+        bool EvalExpression(const wxString &expr, bool isNum, bool toRefresh, QSPJsonBuilder &result, wxString &errorText);
         wxString DescribeLastError() const;
         void AppendErrorInfo(QSPJsonBuilder &builder) const;
         wxString GetCurrentLocation() const;

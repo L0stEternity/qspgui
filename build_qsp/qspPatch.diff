@@ -1,3 +1,363 @@
+diff --git a/qsp/bindings/default/default_control.c b/qsp/bindings/default/default_control.c
+index ee02acf..dbf59cb 100644
+--- a/qsp/bindings/default/default_control.c
++++ b/qsp/bindings/default/default_control.c
+@@ -481,6 +481,18 @@ QSP_BOOL QSPRestartGame(QSP_BOOL toRefreshUI)
+     if (toRefreshUI) qspCallRefreshInt(QSP_FALSE);
+     return QSP_TRUE;
+ }
++/* Seed RAND now; with toKeep, every restart uses the same seed instead of the clock */
++void QSPSetRandomSeed(unsigned int seed, QSP_BOOL toKeep)
++{
++    qspSetSeed(seed);
++    qspIsSeedFixed = toKeep;
++    qspFixedSeed = seed;
++}
++/* Restarts seed RAND from the clock again */
++void QSPResetRandomSeed(void)
++{
++    qspIsSeedFixed = QSP_FALSE;
++}
+ /* ------------------------------------------------------------ */
+ /* Configure callbacks */
+ void QSPSetCallback(int type, QSP_CALLBACK func)
+diff --git a/qsp/bindings/default/qsp_default.h b/qsp/bindings/default/qsp_default.h
+index 2c36aae..bbad38d 100644
+--- a/qsp/bindings/default/qsp_default.h
++++ b/qsp/bindings/default/qsp_default.h
+@@ -126,6 +126,8 @@
+     QSP_EXTERN QSP_BOOL QSPOpenSavedGameFromData(const void *data, int dataSize, QSP_BOOL toRefreshUI);
+ 
+     QSP_EXTERN QSP_BOOL QSPRestartGame(QSP_BOOL toRefreshUI);
++    QSP_EXTERN void QSPSetRandomSeed(unsigned int seed, QSP_BOOL toKeep);
++    QSP_EXTERN void QSPResetRandomSeed(void);
+     /* Variables */
+     QSP_EXTERN QSP_BOOL QSPGetVarValuesCount(QSPString name, int *count);
+     QSP_EXTERN QSP_BOOL QSPGetVarIndexByString(QSPString name, QSPString str, int *index);
+diff --git a/qsp/common.c b/qsp/common.c
+index b9daa84..bfbb687 100644
+--- a/qsp/common.c
++++ b/qsp/common.c
+@@ -31,6 +31,8 @@ QSPString qspViewPath;
+ int qspTimerInterval = 0;
+ QSP_TINYINT qspCurWindowsChangedState = 0;
+ QSP_TINYINT qspCurWindowsDisplayState = 0;
++QSP_BOOL qspIsSeedFixed = QSP_FALSE; /* restarts use qspFixedSeed instead of the clock */
++unsigned int qspFixedSeed = 0;
+ 
+ INLINE unsigned int qspURand(void);
+ INLINE int qspRand(void);
+diff --git a/qsp/common.h b/qsp/common.h
+index df22c99..38dac68 100644
+--- a/qsp/common.h
++++ b/qsp/common.h
+@@ -24,6 +24,8 @@
+     extern QSPString qspViewPath;
+     extern QSP_TINYINT qspCurWindowsChangedState;
+     extern QSP_TINYINT qspCurWindowsDisplayState;
++    extern QSP_BOOL qspIsSeedFixed;
++    extern unsigned int qspFixedSeed;
+ 
+     /* External functions */
+     void qspInitRuntime(void);
+diff --git a/qsp/declarations.h b/qsp/declarations.h
+index 9d747be..ae3da09 100644
+--- a/qsp/declarations.h
++++ b/qsp/declarations.h
+@@ -27,6 +27,19 @@
+ #include "bindings/qsp.h"
+ #include <oniguruma.h>
+ 
++#ifndef MEMWATCH
++    /* Small blocks come from size-class pools (memory.c). The interpreter allocates and frees
++       short strings and values on almost every operation, and the system heap was a third of
++       the run time of a large game. Memwatch keeps its own hooks in debug builds. */
++    void *qspPoolAlloc(size_t size);
++    void *qspPoolRealloc(void *ptr, size_t size);
++    void qspPoolFree(void *ptr);
++
++    #define malloc(size) qspPoolAlloc(size)
++    #define realloc(ptr, size) qspPoolRealloc(ptr, size)
++    #define free(ptr) qspPoolFree(ptr)
++#endif
++
+ #ifndef QSP_DEFINES
+     #define QSP_DEFINES
+ 
+diff --git a/qsp/game.c b/qsp/game.c
+index 6f9952a..c06579a 100644
+--- a/qsp/game.c
++++ b/qsp/game.c
+@@ -140,7 +140,7 @@ QSP_BOOL qspRestartGame(QSP_BOOL toReset)
+     if (toReset)
+     {
+         int oldLocationState = qspLocationState;
+-        qspSetSeed((unsigned int)QSP_TIME(0));
++        qspSetSeed(qspIsSeedFixed ? qspFixedSeed : (unsigned int)QSP_TIME(0));
+         qspTimerInterval = QSP_DEFTIMERINTERVAL;
+         qspCurWindowsDisplayState = QSP_WIN_MAIN | QSP_WIN_VARS | QSP_WIN_ACTS | QSP_WIN_OBJS | QSP_WIN_INPUT;
+         qspMemClear(QSP_FALSE);
+diff --git a/qsp/mathops.c b/qsp/mathops.c
+index 418d0ab..ab56363 100644
+--- a/qsp/mathops.c
++++ b/qsp/mathops.c
+@@ -28,6 +28,13 @@ int qspOpsNamesCounts[QSP_MATHOPSLEVELS];
+ int qspOpMaxLen = 0;
+ QSPCachedMathExpsBucket qspCachedMathExps[QSP_CACHEDEXPSBUCKETS];
+ 
++/* The cache entry that last served an expression text at a given address. The code of a
++   location stays at one address for the life of the world, so this finds its expressions
++   without hashing their text. The text is still compared, so an address reused for other
++   text, or an entry evicted since, only costs a regular lookup. */
++#define QSP_EXPSBYADDRESSCOUNT 8192
++static QSPCachedMathExp *qspCachedMathExpsByAddress[QSP_EXPSBYADDRESSCOUNT];
++
+ INLINE void qspAddOperation(QSP_TINYINT opCode, QSP_TINYINT priority, QSP_FUNCTION func, QSP_TINYINT resType, QSP_TINYINT minArgs, QSP_TINYINT maxArgs, ...);
+ INLINE void qspAddSingleOpName(QSP_TINYINT opCode, QSPString opName, QSP_TINYINT type, int level);
+ INLINE void qspAddOpName(QSP_TINYINT opCode, QSP_CHAR *opName, int level, QSP_BOOL isFunc);
+@@ -185,6 +192,8 @@ void qspClearAllMathExps(QSP_BOOL toInit)
+         bucket->ExpsCount = 0;
+         bucket->ExpToEvict = 0;
+     }
++    /* The texts these entries pointed at are gone */
++    memset(qspCachedMathExpsByAddress, 0, sizeof(qspCachedMathExpsByAddress));
+ }
+ 
+ INLINE QSPMathExpression *qspMathExpGetCompiled(QSPString expStr)
+@@ -195,6 +204,11 @@ INLINE QSPMathExpression *qspMathExpGetCompiled(QSPString expStr)
+     QSP_CHAR *pos;
+     int i, expsCount;
+     unsigned int bCode = 7;
++    /* Try the entry that served this address last time */
++    QSPCachedMathExp **expByAddress = qspCachedMathExpsByAddress +
++        ((((unsigned int)((size_t)expStr.Str / sizeof(QSP_CHAR)) * 2654435761u) + (unsigned int)(expStr.End - expStr.Str)) >> 19) % QSP_EXPSBYADDRESSCOUNT;
++    exp = *expByAddress;
++    if (exp && qspStrsEqual(exp->Text, expStr)) return &exp->CompiledExp;
+     /* Find a correct bucket by hash value */
+     for (pos = expStr.Str; pos < expStr.End; ++pos)
+         bCode = bCode * 31 + (unsigned char)*pos;
+@@ -204,7 +218,11 @@ INLINE QSPMathExpression *qspMathExpGetCompiled(QSPString expStr)
+     expsCount = bucket->ExpsCount;
+     for (i = expsCount; i > 0; --i)
+     {
+-        if (qspStrsEqual(exp->Text, expStr)) return &exp->CompiledExp;
++        if (qspStrsEqual(exp->Text, expStr))
++        {
++            *expByAddress = exp;
++            return &exp->CompiledExp;
++        }
+         ++exp;
+     }
+     /* Compile the new expression */
+@@ -216,6 +234,7 @@ INLINE QSPMathExpression *qspMathExpGetCompiled(QSPString expStr)
+         exp->Text = qspCopyToNewText(expStr);
+         exp->CompiledExp = compiledExp;
+         bucket->ExpsCount++;
++        *expByAddress = exp;
+         return &exp->CompiledExp;
+     }
+     else
+@@ -229,6 +248,7 @@ INLINE QSPMathExpression *qspMathExpGetCompiled(QSPString expStr)
+         exp->CompiledExp = compiledExp;
+         /* Update the next item to be evicted */
+         bucket->ExpToEvict = (bucket->ExpToEvict + 1) % QSP_MAXCACHEDEXPSBUCKETSIZE;
++        *expByAddress = exp;
+         return &exp->CompiledExp;
+     }
+ }
+@@ -941,6 +961,14 @@ void qspFreeMathExpression(QSPMathExpression *expression)
+     free(expression->CompItems);
+ }
+ 
++INLINE void qspFreeArgs(QSPVariant *args, int count, unsigned int lentArgs, QSPVariant *argsBuf)
++{
++    int i;
++    for (i = 0; i < count; ++i)
++        if (!(lentArgs & (1u << i))) qspFreeVariant(args + i);
++    if (args != argsBuf) qspReleaseMemory(args);
++}
++
+ INLINE QSPVariant qspCalculateArgumentValue(QSPMathExpression *expression, int valueIndex, QSP_TINYINT type)
+ {
+     int oldLocationState = qspLocationState;
+@@ -958,7 +986,10 @@ INLINE QSPVariant qspCalculateArgumentValue(QSPMathExpression *expression, int v
+ 
+ QSPVariant qspCalculateValue(QSPMathExpression *expression, int valueIndex) /* the last item represents the whole expression */
+ {
+-    QSPVariant *args, tos;
++    /* Most operations take up to 4 arguments; those fit on the C stack, which is kept small
++       because a game may nest location calls QSP_MAXLOCCALLDEPTH deep */
++    QSPVariant *args = 0, argsBuf[4], tos;
++    unsigned int lentArgs = 0; /* bit per argument that points into the expression, not owned */
+     QSP_TINYINT opCode, argsCount, type;
+     int oldLocationState;
+     if (valueIndex < 0)
+@@ -1039,15 +1070,25 @@ QSPVariant qspCalculateValue(QSPMathExpression *expression, int valueIndex) /* t
+                 return tos;
+             }
+         default:
+-            args = (QSPVariant *)qspAllocateMemory(argsCount * sizeof(QSPVariant));
++            if (argsCount <= 4)
++                args = argsBuf;
++            else
++                args = (QSPVariant *)qspAllocateMemory(argsCount * sizeof(QSPVariant));
+             for (i = 0; i < argsCount; ++i)
+             {
++                QSPMathCompiledOp *argItem = expression->CompItems + argIndices[i];
++                /* Operations that take a variable name only read it, so lend the compiled one instead of copying it */
++                if (qspOps[opCode].ArgsTypes[i] == QSP_TYPE_VARREF && argItem->OpCode == qspOpValue && argItem->Value.Type == QSP_TYPE_VARREF)
++                {
++                    args[i] = argItem->Value;
++                    lentArgs |= (1u << i);
++                    continue;
++                }
+                 args[i] = qspCalculateArgumentValue(expression, argIndices[i], qspOps[opCode].ArgsTypes[i]);
+                 if (qspLocationState != oldLocationState)
+                 {
+                     /* We have to clean up collected arguments */
+-                    qspFreeVariants(args, i);
+-                    qspReleaseMemory(args);
++                    qspFreeArgs(args, i, lentArgs, argsBuf);
+                     return qspGetEmptyVariant(QSP_TYPE_UNDEF);
+                 }
+             }
+@@ -1197,11 +1238,7 @@ QSPVariant qspCalculateValue(QSPMathExpression *expression, int valueIndex) /* t
+         qspOps[opCode].Func(args, argsCount, &tos);
+         break;
+     }
+-    if (argsCount)
+-    {
+-        qspFreeVariants(args, argsCount);
+-        qspReleaseMemory(args);
+-    }
++    if (argsCount) qspFreeArgs(args, argsCount, lentArgs, argsBuf);
+     if (qspLocationState != oldLocationState) return qspGetEmptyVariant(QSP_TYPE_UNDEF);
+     return tos;
+ }
+diff --git a/qsp/memory.c b/qsp/memory.c
+index d48b88a..4e131db 100644
+--- a/qsp/memory.c
++++ b/qsp/memory.c
+@@ -9,6 +9,119 @@
+ 
+ QSPMemoryChunk *qspCurAllocChunk = 0;
+ 
++#ifndef MEMWATCH
++
++/* Size-class pools behind malloc, realloc and free (see declarations.h).
++   Blocks up to QSP_POOLMAXSIZE bytes are cut from 64 KB slabs and kept on a free list
++   per class, larger ones go to the system heap. Each block starts with a header holding
++   its class, so free and realloc know where it came from. Slabs are never returned:
++   the pools only grow to the game's peak. The engine runs on one thread. */
++
++#define QSP_POOLGRANULE 16
++#define QSP_POOLCLASSES 32 /* blocks up to 512 bytes */
++#define QSP_POOLMAXSIZE (QSP_POOLGRANULE * QSP_POOLCLASSES)
++#define QSP_POOLSLABSIZE (64 * 1024)
++#define QSP_POOLLARGE 0xFFFFFFFFu
++
++typedef struct QSPPoolBlock_s
++{
++    struct QSPPoolBlock_s *Next;
++} QSPPoolBlock;
++
++typedef union
++{
++    unsigned int Class;
++    double Align; /* keeps the block after the header aligned for any value */
++} QSPPoolHeader;
++
++static QSPPoolBlock *qspPoolFreeLists[QSP_POOLCLASSES];
++
++static void qspPoolRefill(unsigned int poolClass)
++{
++    size_t blockSize = sizeof(QSPPoolHeader) + (size_t)(poolClass + 1) * QSP_POOLGRANULE;
++    size_t blocksCount = QSP_POOLSLABSIZE / blockSize, i;
++    /* Parentheses keep the macros in declarations.h from turning these into pool calls */
++    unsigned char *slab = (unsigned char *)(malloc)(blocksCount * blockSize);
++    if (!slab) return;
++    for (i = 0; i < blocksCount; ++i)
++    {
++        QSPPoolHeader *header = (QSPPoolHeader *)(slab + i * blockSize);
++        QSPPoolBlock *block = (QSPPoolBlock *)(header + 1);
++        header->Class = poolClass;
++        block->Next = qspPoolFreeLists[poolClass];
++        qspPoolFreeLists[poolClass] = block;
++    }
++}
++
++void *qspPoolAlloc(size_t size)
++{
++    unsigned int poolClass;
++    QSPPoolBlock *block;
++    if (!size) size = 1;
++    if (size > QSP_POOLMAXSIZE)
++    {
++        QSPPoolHeader *header = (QSPPoolHeader *)(malloc)(sizeof(QSPPoolHeader) + size);
++        if (!header) return 0;
++        header->Class = QSP_POOLLARGE;
++        return header + 1;
++    }
++    poolClass = (unsigned int)((size - 1) / QSP_POOLGRANULE);
++    if (!qspPoolFreeLists[poolClass]) qspPoolRefill(poolClass);
++    block = qspPoolFreeLists[poolClass];
++    if (!block) return 0;
++    qspPoolFreeLists[poolClass] = block->Next;
++    return block;
++}
++
++void qspPoolFree(void *ptr)
++{
++    QSPPoolHeader *header;
++    if (!ptr) return;
++    header = (QSPPoolHeader *)ptr - 1;
++    if (header->Class == QSP_POOLLARGE)
++    {
++        (free)(header);
++        return;
++    }
++    ((QSPPoolBlock *)ptr)->Next = qspPoolFreeLists[header->Class];
++    qspPoolFreeLists[header->Class] = (QSPPoolBlock *)ptr;
++}
++
++void *qspPoolRealloc(void *ptr, size_t size)
++{
++    QSPPoolHeader *header;
++    void *newPtr;
++    size_t oldSize;
++    if (!ptr) return qspPoolAlloc(size);
++    if (!size)
++    {
++        qspPoolFree(ptr);
++        return 0;
++    }
++    header = (QSPPoolHeader *)ptr - 1;
++    if (header->Class == QSP_POOLLARGE)
++    {
++        if (size > QSP_POOLMAXSIZE)
++        {
++            QSPPoolHeader *newHeader = (QSPPoolHeader *)(realloc)(header, sizeof(QSPPoolHeader) + size);
++            return (newHeader ? newHeader + 1 : 0);
++        }
++        /* Shrinks into a pool: the new size is the smaller one */
++        newPtr = qspPoolAlloc(size);
++        if (newPtr) memcpy(newPtr, ptr, size);
++        (free)(header);
++        return newPtr;
++    }
++    oldSize = (size_t)(header->Class + 1) * QSP_POOLGRANULE;
++    if (size <= oldSize) return ptr;
++    newPtr = qspPoolAlloc(size);
++    if (newPtr) memcpy(newPtr, ptr, oldSize);
++    qspPoolFree(ptr);
++    return newPtr;
++}
++
++#endif
++
+ void qspInitStackAllocator(void)
+ {
+     qspCurAllocChunk = qspAllocateMemChunk();
 diff --git a/qsp/statements.c b/qsp/statements.c
 index b5ee65b..80ca922 100644
 --- a/qsp/statements.c

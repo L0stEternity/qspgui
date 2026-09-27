@@ -342,7 +342,33 @@ media formats and CSS. The classic renderer remains the default and is unchanged
 
 - `CHANGELOG.md`.
 
+- **Development API for test suites:** `evalMany` reads a list of expressions in
+  one round trip, each slot carrying its value or its own error; `seed` makes
+  `RAND` repeatable, by default across restarts and new games too, so a suite
+  can replay the same world from `START` (the engine gains
+  `QSPSetRandomSeed` / `QSPResetRandomSeed` for it); and `exec` accepts real
+  multi-line code with any line ending, where a bare LF used to glue a whole
+  block into one broken line. See `DEVAPI.md`.
+
 ### Changed
+
+- **The interpreter runs large games 1.5 to 2 times faster.** Three changes to
+  the engine patch (`build_qsp/qspPatch.diff`), measured on a 545-location game
+  whose modules call each other thousands of times per step:
+  - Small blocks come from size-class pools instead of the system heap
+    (`memory.c`, hooked in `declarations.h` the way memwatch is in debug
+    builds). The interpreter allocates and frees a short string or value on
+    nearly every operation, and the heap was a third of the run time.
+  - An operation that takes a variable name (`arrsize`, `arrpos`, an array
+    read) borrows the name from the compiled expression instead of copying it,
+    and up to four arguments live on the C stack.
+  - The expression cache remembers which entry served each code address, so a
+    location's expressions are found without re-hashing their text. The text
+    is still compared, so a reused address falls back to the normal lookup.
+
+  Results and saves are unchanged: a seeded run of the same game produced the
+  same save byte for byte, apart from the game's own timing variables, and the
+  2000-deep call limit still ends in the engine's error rather than a crash.
 
 - **A new application icon, drawn as pixel art.** The old mark was a red Q on
   an opaque white square, which put a white box on every dark taskbar and

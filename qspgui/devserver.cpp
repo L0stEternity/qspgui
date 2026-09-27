@@ -572,6 +572,8 @@ bool QSPDevServer::Invoke(const wxString &method, const QSPJsonReader &params, Q
     if (method == wxT("locationCode")) return CmdLocationCode(params, result, errorText);
     if (method == wxT("exec")) return CmdExec(params, result, errorText);
     if (method == wxT("eval")) return CmdEval(params, result, errorText);
+    if (method == wxT("evalMany")) return CmdEvalMany(params, result, errorText);
+    if (method == wxT("seed")) return CmdSeed(params, result, errorText);
     if (method == wxT("getVar")) return CmdGetVar(params, result, errorText);
     if (method == wxT("setVar")) return CmdSetVar(params, result, errorText);
     if (method == wxT("vars")) return CmdVars(params, result, errorText);
@@ -657,7 +659,13 @@ void QSPDevServer::AppendErrorInfo(QSPJsonBuilder &builder) const
 bool QSPDevServer::RunCode(const wxString &code, bool toRefresh, wxString &errorText)
 {
     m_watchReason = wxT("exec");
-    if (!QSPExecString(QSPDevString(code), toRefresh ? QSP_TRUE : QSP_FALSE))
+    /* The engine splits lines on CRLF only; a bare LF would glue a whole block into one
+       line, so multi-line code from a client arrives as one broken statement */
+    wxString lines(code);
+    lines.Replace(wxT("\r\n"), wxT("\n"));
+    lines.Replace(wxT("\r"), wxT("\n"));
+    lines.Replace(wxT("\n"), wxT("\r\n"));
+    if (!QSPExecString(QSPDevString(lines), toRefresh ? QSP_TRUE : QSP_FALSE))
     {
         errorText = DescribeLastError();
         return false;
@@ -841,8 +849,14 @@ bool QSPDevServer::CmdEval(const QSPJsonReader &params, QSPJsonBuilder &result, 
         return false;
     }
 
-    bool toRefresh = params.GetBool(wxT("refresh"), false);
-    if (params.GetString(wxT("type"), wxT("str")) == wxT("num"))
+    bool isNum = (params.GetString(wxT("type"), wxT("str")) == wxT("num"));
+    return EvalExpression(expr, isNum, params.GetBool(wxT("refresh"), false), result, errorText);
+}
+
+/* Writes {"type":..,"value":..} for one expression, or leaves the builder alone on failure */
+bool QSPDevServer::EvalExpression(const wxString &expr, bool isNum, bool toRefresh, QSPJsonBuilder &result, wxString &errorText)
+{
+    if (isNum)
     {
         QSP_BIGINT value;
         if (!QSPCalculateNumExpression(QSPDevString(expr), &value, toRefresh ? QSP_TRUE : QSP_FALSE))
@@ -867,6 +881,69 @@ bool QSPDevServer::CmdEval(const QSPJsonReader &params, QSPJsonBuilder &result, 
     result.StartObject();
     result.Member(wxT("type"), wxT("str"));
     result.Member(wxT("value"), wxString(&buffer[0]));
+    result.EndObject();
+    return true;
+}
+
+/* Several expressions in one round trip. A test reads dozens of values per step, and a
+   request per value spends more time on the socket than in the interpreter. One failing
+   expression doesn't stop the rest: its slot carries the error instead of a value. */
+bool QSPDevServer::CmdEvalMany(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText)
+{
+    std::vector<wxString> exprs = params.GetStringArray(wxT("exprs"));
+    if (exprs.empty())
+    {
+        errorText = wxT("\"exprs\" is required");
+        return false;
+    }
+    /* "types" goes item by item; "type" is the default for the rest */
+    std::vector<wxString> types = params.GetStringArray(wxT("types"));
+    wxString defaultType = params.GetString(wxT("type"), wxT("str"));
+
+    result.StartObject();
+    result.Key(wxT("results"));
+    result.StartArray();
+    for (size_t i = 0; i < exprs.size(); ++i)
+    {
+        bool isNum = ((i < types.size() ? types[i] : defaultType) == wxT("num"));
+        wxString itemError;
+        if (!EvalExpression(exprs[i], isNum, false, result, itemError))
+        {
+            result.StartObject();
+            result.Member(wxT("error"), itemError);
+            result.EndObject();
+        }
+    }
+    result.EndArray();
+    result.EndObject();
+    return true;
+}
+
+/* Makes RAND repeatable. With "keep" (the default) every restart and new game uses the
+   seed too, so a test can seed once and replay the same world from START; "clock" goes
+   back to seeding from the time. */
+bool QSPDevServer::CmdSeed(const QSPJsonReader &params, QSPJsonBuilder &result, wxString &errorText)
+{
+    if (params.GetBool(wxT("clock"), false))
+    {
+        QSPResetRandomSeed();
+        result.StartObject();
+        result.MemberBool(wxT("fixed"), false);
+        result.EndObject();
+        return true;
+    }
+    if (!params.Has(wxT("value")))
+    {
+        errorText = wxT("\"value\" or \"clock\" is required");
+        return false;
+    }
+    long seed = params.GetInt(wxT("value"), 0);
+    bool toKeep = params.GetBool(wxT("keep"), true);
+    QSPSetRandomSeed((unsigned int)seed, toKeep ? QSP_TRUE : QSP_FALSE);
+
+    result.StartObject();
+    result.MemberBool(wxT("fixed"), toKeep);
+    result.MemberInt(wxT("value"), seed);
     result.EndObject();
     return true;
 }

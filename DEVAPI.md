@@ -108,6 +108,8 @@ is a round trip through a save:
 | `locationCode` | `name` | `desc`, `code[{lineNum,line}]`, `actions[{name,image,code[]}]` |
 | `exec` | `code`, `refresh` | `ok`, `loc` |
 | `eval` | `expr`, `type` (`str`\|`num`), `refresh` | `type`, `value` |
+| `evalMany` | `exprs[]`, `types[]`, `type` | `results[{type,value}\|{error}]` |
+| `seed` | `value`, `keep`, or `clock` | `fixed`, `value` |
 | `getVar` | `name`, `index` | `type`, `value`, `count` |
 | `setVar` | `name`, `value`, `index`, `refresh` | `ok` |
 | `vars` | `names[]`, `filter`, `maxValues`, `maxVars`, `includeEmpty`, `rescan` | `count`, `skipped`, `truncated`, `loc`, `vars[]` |
@@ -132,6 +134,35 @@ between attempts instead of replaying up to it.
 
 Variable names are case-insensitive — the engine upper-cases them while
 preprocessing code, and so does the server. The `$` prefix is optional.
+
+`exec` takes real multi-line code: `if`/`loop`/`act` blocks work as they do in a
+location. The engine only splits lines on CRLF, so the server turns any line ending
+it receives into one; there is no need to glue statements with `&`.
+
+`eval` returns a string unless asked for `"type":"num"`.
+
+## Tests: many values at once, and the same world every run
+
+`evalMany` evaluates a list of expressions in one round trip, in order. A failing
+expression gets `{"error":...}` in its slot and the rest still run, so one typo
+doesn't hide the other results. `types[]` sets the type item by item and `type` is
+the default for the rest:
+
+```jsonc
+{"method":"evalMany","params":{"exprs":["time_now","$curloc","arrsize('$log')"],
+                               "types":["num","str","num"]}}
+```
+```jsonc
+{"results":[{"type":"num","value":570},{"type":"str","value":"start"},
+            {"type":"num","value":0}]}
+```
+
+`seed` makes `RAND` repeatable. `{"value":42}` seeds it now and, because `keep`
+defaults to true, every restart and new game from then on uses 42 instead of the
+clock — the engine reseeds before `START` runs, so seeding once and then calling
+`restart` replays the same world from the beginning. `{"value":42,"keep":false}`
+seeds only now; `{"clock":true}` goes back to the clock. Anything a game derives
+from `msecscount` or the date still differs between runs.
 
 ## Inspecting variables
 
