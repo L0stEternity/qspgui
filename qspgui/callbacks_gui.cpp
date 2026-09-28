@@ -353,10 +353,16 @@ int QSPCallbacks::Sleep(int msecs)
 
 int QSPCallbacks::GetMSCount()
 {
+    /* The engine adds up what this returns. Restarting the watch on every
+       read threw away the fraction of a millisecond since the last one, so a
+       loop reading MSECSCOUNT on every step saw no time pass at all. The watch
+       runs on; each read returns how far its total moved past the last one. */
     static wxStopWatch stopWatch;
-    int ret = stopWatch.Time();
-    stopWatch.Start();
-    return ret;
+    static wxLongLong reportedTime = 0;
+    wxLongLong currentTime = stopWatch.TimeInMicro() / 1000;
+    int elapsed = (currentTime - reportedTime).ToLong();
+    reportedTime = currentTime;
+    return elapsed;
 }
 
 int QSPCallbacks::Msg(QSPString str)

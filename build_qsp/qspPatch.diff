@@ -345,6 +345,21 @@ index 418d0ab..ab56363 100644
      if (qspLocationState != oldLocationState) return qspGetEmptyVariant(QSP_TYPE_UNDEF);
      return tos;
  }
+diff --git a/qsp/mathops.h b/qsp/mathops.h
+index 8c5d494..25eb1d1 100644
+--- a/qsp/mathops.h
++++ b/qsp/mathops.h
+@@ -15,8 +15,8 @@
+     #define QSP_MAXMATHOPARGS 20
+     #define QSP_MATHSTACKSIZE 30
+     #define QSP_MAXMATHITEMS 200
+-    #define QSP_MAXCACHEDEXPSBUCKETSIZE 5
+-    #define QSP_CACHEDEXPSBUCKETS 512
++    #define QSP_MAXCACHEDEXPSBUCKETSIZE 8
++    #define QSP_CACHEDEXPSBUCKETS 16384
+ 
+     /* Helpers */
+     #define QSP_TOBOOL(x) ((x) != 0) /* converts a number to a QSP boolean value */
 diff --git a/qsp/memory.c b/qsp/memory.c
 index d48b88a..4e131db 100644
 --- a/qsp/memory.c
