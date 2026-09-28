@@ -97,6 +97,117 @@ index 6f9952a..c06579a 100644
          qspTimerInterval = QSP_DEFTIMERINTERVAL;
          qspCurWindowsDisplayState = QSP_WIN_MAIN | QSP_WIN_VARS | QSP_WIN_ACTS | QSP_WIN_OBJS | QSP_WIN_INPUT;
          qspMemClear(QSP_FALSE);
+diff --git a/qsp/locations.c b/qsp/locations.c
+index 38ccba8..f0c68aa 100644
+--- a/qsp/locations.c
++++ b/qsp/locations.c
+@@ -19,6 +19,11 @@ QSPLocation *qspLocs = 0;
+ int qspLocsCount = 0;
+ QSPLocName *qspLocsNames = 0;
+ int qspLocsNamesCount = 0;
++/* Open addressing over qspLocsNames by the hash of the upper-case name, so a location call
++   costs one pass over its name instead of a copy and a binary search. Holds indices into
++   qspLocsNames, -1 marks an empty slot. */
++static int *qspLocsNamesTable = 0;
++static unsigned int qspLocsNamesTableMask = 0;
+ int qspCurLoc = -1;
+ int qspLocationState = 0;
+ int qspFullRefreshCount = 0;
+@@ -38,6 +43,44 @@ INLINE int qspLocNameCompare(const void *name, const void *compareTo)
+     return qspStrsCompare(*(QSPString *)name, ((QSPLocName *)compareTo)->Name);
+ }
+ 
++INLINE unsigned int qspLocNameHash(QSPString name)
++{
++    QSP_CHAR *pos;
++    unsigned int nameHash = 7;
++    for (pos = name.Str; pos < name.End; ++pos)
++        nameHash = nameHash * 31 + (unsigned int)*pos;
++    return nameHash;
++}
++
++INLINE void qspUpdateLocsNamesTable(void)
++{
++    int i;
++    unsigned int size, slot;
++    if (qspLocsNamesTable)
++    {
++        free(qspLocsNamesTable);
++        qspLocsNamesTable = 0;
++    }
++    if (!qspLocsNamesCount) return;
++    for (size = 16; size < (unsigned int)qspLocsNamesCount * 2; size <<= 1);
++    qspLocsNamesTable = (int *)malloc(size * sizeof(int));
++    qspLocsNamesTableMask = size - 1;
++    for (slot = 0; slot < size; ++slot)
++        qspLocsNamesTable[slot] = -1;
++    for (i = 0; i < qspLocsNamesCount; ++i)
++    {
++        /* A duplicate name keeps the entry the binary search used to find */
++        QSPLocName *loc = (QSPLocName *)bsearch(&qspLocsNames[i].Name, qspLocsNames, qspLocsNamesCount, sizeof(QSPLocName), qspLocNameCompare);
++        slot = qspLocNameHash(qspLocsNames[i].Name) & qspLocsNamesTableMask;
++        while (qspLocsNamesTable[slot] >= 0)
++        {
++            if (qspStrsEqual(qspLocsNames[qspLocsNamesTable[slot]].Name, qspLocsNames[i].Name)) break;
++            slot = (slot + 1) & qspLocsNamesTableMask;
++        }
++        qspLocsNamesTable[slot] = (int)(loc - qspLocsNames);
++    }
++}
++
+ void qspResizeWorld(int newLocsCount)
+ {
+     int oldLocsCount = qspLocsCount;
+@@ -131,6 +174,7 @@ void qspUpdateLocsNames(void)
+         }
+         qsort(qspLocsNames, qspLocsNamesCount, sizeof(QSPLocName), qspLocNamesCompare);
+     }
++    qspUpdateLocsNamesTable();
+ }
+ 
+ int qspLocIndex(QSPString name)
+@@ -140,12 +184,35 @@ int qspLocIndex(QSPString name)
+         name = qspDelSpc(name);
+         if (!qspIsEmpty(name))
+         {
+-            QSPLocName *loc;
+-            name = qspCopyToNewText(name);
+-            qspUpperStr(&name);
+-            loc = (QSPLocName *)bsearch(&name, qspLocsNames, qspLocsNamesCount, sizeof(QSPLocName), qspLocNameCompare);
+-            qspFreeString(&name);
+-            if (loc) return loc->Index;
++            /* Names this short are upper-cased on the stack, longer ones on the heap */
++            QSP_CHAR buf[64], *dest;
++            QSPString upperName;
++            int ind, locIndex = -1;
++            unsigned int slot;
++            if (qspStrLen(name) <= (int)(sizeof(buf) / sizeof(QSP_CHAR)))
++            {
++                QSP_CHAR *pos;
++                for (pos = name.Str, dest = buf; pos < name.End; ++pos, ++dest)
++                    *dest = (QSP_CHAR)QSP_CHRUPR(*pos);
++                upperName = qspStringFromPair(buf, dest);
++            }
++            else
++            {
++                upperName = qspCopyToNewText(name);
++                qspUpperStr(&upperName);
++            }
++            slot = qspLocNameHash(upperName) & qspLocsNamesTableMask;
++            while ((ind = qspLocsNamesTable[slot]) >= 0)
++            {
++                if (qspStrsEqual(qspLocsNames[ind].Name, upperName))
++                {
++                    locIndex = qspLocsNames[ind].Index;
++                    break;
++                }
++                slot = (slot + 1) & qspLocsNamesTableMask;
++            }
++            if (upperName.Str != buf) qspFreeString(&upperName);
++            return locIndex;
+         }
+     }
+     return -1;
 diff --git a/qsp/mathops.c b/qsp/mathops.c
 index 418d0ab..ab56363 100644
 --- a/qsp/mathops.c
@@ -422,3 +533,127 @@ index a30ee78..e7e51f7 100644
                  dest->Str = (QSP_CHAR *)realloc(dest->Str, dest->Capacity * sizeof(QSP_CHAR));
              }
              dest->Str[dest->Len] = ch;
+diff --git a/qsp/variables.c b/qsp/variables.c
+index 3998a17..1770d9b 100644
+--- a/qsp/variables.c
++++ b/qsp/variables.c
+@@ -18,6 +18,15 @@ QSPVar qspNullVar;
+ QSPVarsScope qspGlobalVars;
+ QSPVarsScopeChunk *qspCurrentLocalVars = 0;
+ 
++/* How many local variables exist, in the current and the set-aside scope chains, per slot of
++   the name hash. A zero slot means no local scope can hold the name, so a lookup goes straight
++   to the globals instead of checking every scope of every call level. A shared slot only costs
++   the full walk. */
++#define QSP_LOCALNAMESLOTS 4096
++static unsigned int qspLocalNamesCounts[QSP_LOCALNAMESLOTS];
++
++#define QSP_LOCALNAMESLOT(nameHash) (((nameHash) ^ ((nameHash) >> 12)) & (QSP_LOCALNAMESLOTS - 1))
++
+ QSP_TINYINT qspSpecToBaseTypeTable[128];
+ 
+ INLINE int qspIndStringCompare(const void *name, const void *compareTo);
+@@ -154,6 +163,7 @@ void qspClearVars(QSPVarsScope *scope)
+     int i, j;
+     QSPVar *var;
+     QSPVarsBucket *bucket = scope->Buckets;
++    QSP_BOOL isLocalScope = (scope != &qspGlobalVars);
+     for (i = scope->BucketsCount; i > 0; --i, ++bucket)
+     {
+         var = bucket->Vars;
+@@ -162,6 +172,7 @@ void qspClearVars(QSPVarsScope *scope)
+             /* Remove vars & keep the allocated vars buffer */
+             for (j = bucket->VarsCount; j > 0; --j, ++var)
+             {
++                if (isLocalScope) qspLocalNamesCounts[QSP_LOCALNAMESLOT(qspGetNameHash(var->Name))]--;
+                 qspFreeString(&var->Name);
+                 qspEmptyVar(var);
+             }
+@@ -269,6 +280,7 @@ INLINE QSPVar *qspAddVarToLocals(QSPString name)
+         qspSetError(QSP_ERR_TOOMANYVARS);
+         return 0;
+     }
++    qspLocalNamesCounts[QSP_LOCALNAMESLOT(nameHash)]++;
+     return qspCreateNewVar(bucket, name, 8);
+ }
+ 
+@@ -277,6 +289,7 @@ INLINE QSPVar *qspAddSpecialVarToScope(QSPVarsScope *scope, QSPString name)
+     unsigned int nameHash = qspGetNameHash(name); /* we don't validate the name */
+     QSPVarsBucket *bucket = scope->Buckets + (nameHash % scope->BucketsCount);
+ 
++    qspLocalNamesCounts[QSP_LOCALNAMESLOT(nameHash)]++;
+     return qspCreateNewVar(bucket, name, 2); /* small increment for special vars */
+ }
+ 
+@@ -374,9 +387,9 @@ QSPVar *qspVarReference(QSPString name, QSP_BOOL toCreate)
+         return 0;
+     }
+ 
+-    /* Check all local scopes starting the latest */
++    /* Check all local scopes starting the latest, unless none of them can hold the name */
+     nameHash = qspGetNameHash(name);
+-    chunk = qspCurrentLocalVars;
++    chunk = (qspLocalNamesCounts[QSP_LOCALNAMESLOT(nameHash)] ? qspCurrentLocalVars : 0);
+     while (chunk)
+     {
+         scope = chunk->Slots + chunk->SlotsCount - 1;
+@@ -445,21 +458,37 @@ int qspGetVarIndex(QSPVar *var, QSPVariant index, QSP_BOOL toCreate)
+ {
+     int indsCount;
+     QSPString uStr;
++    QSP_CHAR keyBuf[128];
+     if (QSP_ISNUM(index.Type)) return QSP_TOINT(QSP_NUM(index));
+-    uStr = qspGetVariantAsIndexString(&index);
+-    qspUpperStr(&uStr);
++    /* A string key short enough is built on the stack, and copied only when it's added */
++    uStr = QSP_STATIC_STR(QSP_STRTYPE);
++    if (QSP_ISSTR(index.Type) && qspStrLen(uStr) + qspStrLen(QSP_STR(index)) <= (int)(sizeof(keyBuf) / sizeof(QSP_CHAR)))
++    {
++        QSP_CHAR *pos, *dest = keyBuf;
++        for (pos = uStr.Str; pos < uStr.End; ++pos, ++dest)
++            *dest = (QSP_CHAR)QSP_CHRUPR(*pos);
++        for (pos = QSP_STR(index).Str; pos < QSP_STR(index).End; ++pos, ++dest)
++            *dest = (QSP_CHAR)QSP_CHRUPR(*pos);
++        uStr = qspStringFromPair(keyBuf, dest);
++    }
++    else
++    {
++        uStr = qspGetVariantAsIndexString(&index);
++        qspUpperStr(&uStr);
++    }
+     indsCount = var->IndsCount;
+     if (indsCount > 0)
+     {
+         QSPVarIndex *ind = (QSPVarIndex *)bsearch(&uStr, var->Indices, indsCount, sizeof(QSPVarIndex), qspIndStringCompare);
+         if (ind)
+         {
+-            qspFreeString(&uStr);
++            if (uStr.Str != keyBuf) qspFreeString(&uStr);
+             return ind->Index;
+         }
+     }
+     if (toCreate)
+     {
++        if (uStr.Str == keyBuf) uStr = qspCopyToNewText(uStr);
+         /* Find the first item that's smaller than uStr */
+         int floorItem = indsCount - 1;
+         if (indsCount > 0)
+@@ -474,7 +503,8 @@ int qspGetVarIndex(QSPVar *var, QSPVariant index, QSP_BOOL toCreate)
+         /* Prepare buffer & shift existing items to allocate extra space */
+         if (indsCount >= var->IndsCapacity)
+         {
+-            var->IndsCapacity = indsCount + 8;
++            /* Grow by half: a table with thousands of keys would otherwise be copied on every 8th key */
++            var->IndsCapacity = indsCount + indsCount / 2 + 8;
+             var->Indices = (QSPVarIndex *)realloc(var->Indices, var->IndsCapacity * sizeof(QSPVarIndex));
+         }
+         ++floorItem;
+@@ -490,7 +520,7 @@ int qspGetVarIndex(QSPVar *var, QSPVariant index, QSP_BOOL toCreate)
+         var->IndsCount++;
+         return indsCount;
+     }
+-    qspFreeString(&uStr);
++    if (uStr.Str != keyBuf) qspFreeString(&uStr);
+     return -1;
+ }
+ 
